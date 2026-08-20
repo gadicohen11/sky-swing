@@ -68,7 +68,7 @@ function starPath(x, y, R, pts, inner, rot) {
 }
 
 /* ---------- save ---------- */
-var SAVE = { bestDist: 0, bestTime: 0, bestSaved: 0, sfx: 1, mus: 1, seen: 0 };
+var SAVE = { bestDist: 0, bestSaved: 0, level: 1, times: {}, sfx: 1, mus: 1, seen: 0 };
 try {
   var raw = localStorage.getItem("skySwing_v2");
   if (raw) { var o = JSON.parse(raw); for (var k in o) SAVE[k] = o[k]; }
@@ -177,20 +177,26 @@ var MODES = {
 };
 
 var L = null;
+function corridorY(x) { return GROUND - 690 + Math.sin(x * 0.00215) * 205 + Math.sin(x * 0.00071) * 90; }
 
+var MAXLVL = 8, forceLv = 0;
 function newCity(mode) {
   var cfg = MODES[mode];
+  if (mode === "flag") {
+    var lv = clamp(forceLv || SAVE.level || 1, 1, MAXLVL); forceLv = 0;
+    cfg = { gap: [70, 140 + lv * 12], hi: [300, 600 + lv * 40], vic: 0, end: 9000 + (lv - 1) * 1800, lv: lv };
+  }
   L = {
     mode: mode, cfg: cfg, rng: seeded(Math.floor(Math.random() * 1e9) >>> 0),
-    B: [], stars: [], vic: [], nextX: 120, drop: 0,
+    B: [], stars: [], vic: [], nextX: 120, drop: 0, starX: 420,
     P: paletteAt(0), startX: 0, dist: 0, starGot: 0, saved: 0, time: 0,
     end: null, done: 0,
-    far: [], mid: [], clouds: [], nextFar: -400, nextMid: -400, nextCloud: -300
+    far: [], mid: [], clouds: [], fore: [], nextFar: -400, nextMid: -400, nextCloud: -300, nextFore: 600
   };
   /* launch platform */
   L.B.push({ x: 120, w: 240, top: GROUND - 380, start: 1 });
   L.nextX = 120 + 240 + 110;
-  L.startX = 240;
+  L.startX = 300;
   for (var i = 0; i < 5; i++) addChunk();
   extendBack(1200);
   return L;
@@ -215,19 +221,10 @@ function addChunk() {
     if (c.vic && L.B.length > 4 && w > 130 && R() < 0.34) {
       L.vic.push({ x: b.x + b.w * 0.5, y: b.top - 20, state: 0, t: R() * 6 });
     }
-    /* a gentle arc of stars over the gap */
-    var prev = L.B[L.B.length - 2];
-    if (prev) {
-      var gx0 = prev.x + prev.w, gw = b.x - gx0;
-      if (gw > 50) {
-        var n = gw > 190 ? 4 : 3;
-        var peak = Math.min(prev.top, b.top) - (70 + R() * 80);
-        for (var q = 0; q < n; q++) {
-          var t = (q + 1) / (n + 1);
-          var sy = lerp(prev.top - 40, b.top - 40, t) - Math.sin(t * Math.PI) * (Math.min(prev.top, b.top) - peak);
-          L.stars.push({ x: gx0 + gw * t, y: sy, got: 0, t: R() * 6 });
-        }
-      }
+    /* a ribbon of stars along the line he actually swings through */
+    while (L.starX < b.x + b.w) {
+      L.stars.push({ x: L.starX, y: corridorY(L.starX), got: 0, t: R() * 6 });
+      L.starX += 118;
     }
     x += w + Math.round(c.gap[0] + R() * (c.gap[1] - c.gap[0]));
   }
@@ -237,6 +234,12 @@ function addChunk() {
 function extendBack(hx) {
   var R = L.rng;
   var fTo = hx * 0.35 + LW + 400, mTo = hx * 0.6 + LW + 400, cTo = hx * 0.14 + LW + 600;
+  var gTo = hx * 1.34 + LW + 500;
+  while (L.nextFore < gTo) {
+    var fw = 130 + R() * 150;
+    L.fore.push({ x: L.nextFore, w: fw, h: 620 + R() * 900 });
+    L.nextFore += fw + 620 + R() * 900;
+  }
   while (L.nextFar < fTo) { var w = 50 + R() * 130; L.far.push({ x: L.nextFar, w: w, h: 160 + R() * 420 }); L.nextFar += w + 8 + R() * 60; }
   while (L.nextMid < mTo) { var w2 = 70 + R() * 140; L.mid.push({ x: L.nextMid, w: w2, h: 240 + R() * 600 }); L.nextMid += w2 + 10 + R() * 70; }
   while (L.nextCloud < cTo) { L.clouds.push({ x: L.nextCloud, y: GROUND - 700 - R() * 700, s: 0.6 + R() * 1.1 }); L.nextCloud += 160 + R() * 380; }
@@ -253,60 +256,51 @@ function cityUpdate(hx) {
   while (L.far.length && L.far[0].x < cut * 0.35 - 400) L.far.shift();
   while (L.mid.length && L.mid[0].x < cut * 0.6 - 400) L.mid.shift();
   while (L.clouds.length && L.clouds[0].x < cut * 0.14 - 400) L.clouds.shift();
+  while (L.fore.length && L.fore[0].x < cut * 1.34 - 600) L.fore.shift();
   if (L.mode !== "flag") L.P = paletteAt(hx);
 }
 
 /* ============================================================
-   HERO + PHYSICS  (auto-swing: hold anywhere and go)
+   HERO + PHYSICS
+   He swings IN FRONT of the city. Buildings are scenery he webs
+   onto — he never collides with them. Only the sky and the street
+   below have any say in where he goes.
    ============================================================ */
-var GRAV = 0.60, MAXR = 520, MINROPE = 130, REEL = 0.50, PUMP = 0.15, VMAX = 30, HR = 15;
+var GRAV = 0.58, MAXR = 560, MINROPE = 165, REEL = 0.42, PUMP = 0.16, VMAX = 31, HR = 15;
+var LOWLINE = GROUND - 390;      /* get under this and the web pulls him back up */
 var H = null, held = false;
 var parts = [], toasts = [];
 
 function resetHero() {
-  var s = L.B[0];
   H = {
-    x: s.x + s.w * 0.5, y: s.top - HR - 6, vx: 0, vy: 0,
-    rope: null, face: 1, onRoof: s, t: 0, since: 0, cool: 0, stall: 0,
-    bubble: 0, bx: 0, by: 0, best: 0, arm: 0
+    x: 300, y: GROUND - 820, vx: 7.5, vy: 0,
+    rope: null, face: 1, t: 0, since: 0, cool: 0, stall: 0,
+    bubble: 0, arm: 0, handX: undefined, handY: undefined
   };
 }
 
-function lineClear(x0, y0, x1, y1) {
-  var lo = Math.min(x0, x1), hi = Math.max(x0, x1);
-  if (hi - lo < 2) return true;
-  for (var i = 0; i < L.B.length; i++) {
-    var b = L.B[i];
-    if (b.x + b.w < lo || b.x > hi) continue;
-    var cx = clamp(b.x + b.w / 2, lo + 1, hi - 1);
-    var t = (cx - x0) / (x1 - x0);
-    if (t <= 0.02 || t >= 0.98) continue;
-    var ly = y0 + (y1 - y0) * t;
-    if (ly > b.top + 6) return false;
-  }
-  return true;
-}
-
+/* Any rooftop point above him is fair game — the web line simply passes
+   in front of the buildings, exactly like it does in the real thing. */
 function findAnchor() {
   var best = null, bestS = -1e9;
-  var lead = H.x + H.vx * 6;
+  var lead = H.x + H.vx * 7;
   for (var i = 0; i < L.B.length; i++) {
     var b = L.B[i];
-    if (b.x + b.w < H.x - 140 || b.x > H.x + MAXR + 40) continue;
-    var cand = [b.x + 6, b.x + b.w * 0.5, b.x + b.w - 6];
-    for (var c = 0; c < 3; c++) {
-      var ax = cand[c], ay = b.top - 4;
-      if (ay > H.y - 45) continue;
-      var d = hyp(ax - H.x, ay - H.y);
-      if (d > MAXR || d < 80) continue;
-      if (!lineClear(H.x, H.y, ax, ay)) continue;
+    if (b.x + b.w < H.x - 200 || b.x > H.x + MAXR + 60) continue;
+    var cand = [b.x + 8, b.x + b.w * 0.35, b.x + b.w * 0.68, b.x + b.w - 8];
+    for (var c = 0; c < cand.length; c++) {
+      var ax = cand[c], ay = b.top - 6;
+      if (ay > H.y - 60) continue;
       var dx = ax - H.x, dyUp = H.y - ay;
-      if (dx < -40) continue;
+      var d = hyp(dx, dyUp);
+      if (d > MAXR || d < 110) continue;
+      if (dx < -60) continue;
       var ang = Math.atan2(dyUp, Math.abs(dx) < 1 ? 1 : dx);
-      var sc = 3.0 - 2.4 * Math.abs(ang - 0.95);
-      if (dx < 30) sc -= 1.4;
-      sc += 1.4 * (1 - Math.abs(d - 330) / MAXR);
+      var sc = 3.0 - 2.2 * Math.abs(ang - 0.88);
+      if (dx < 60) sc -= 1.5;
+      sc += 1.4 * (1 - Math.abs(d - 370) / MAXR);
       sc += 0.9 * (1 - Math.abs(ax - lead) / MAXR);
+      if (H.y > LOWLINE - 180) sc += 1.2 * clamp(dyUp / 400, 0, 1);   /* low down: reach high */
       if (sc > bestS) { bestS = sc; best = { ax: ax, ay: ay }; }
     }
   }
@@ -317,30 +311,15 @@ function shootWeb() {
   var a = findAnchor();
   if (!a) return false;
   H.rope = { ax: a.ax, ay: a.ay, len: hyp(a.ax - H.x, a.ay - H.y) };
-  H.onRoof = null; H.since = 0; H.arm = 1;
+  H.since = 0; H.arm = 1;
   SFX.thwip();
   return true;
 }
 function letGo(quiet) {
-  if (H.rope) { H.rope = null; H.since = 0; H.cool = 8; if (!quiet) SFX.release(); }
+  if (H.rope) { H.rope = null; H.since = 0; H.cool = 7; if (!quiet) SFX.release(); }
 }
 function pressStart() { held = true; }
 function pressEnd() { held = false; }
-
-function landOn(b) {
-  H.onRoof = b; H.rope = null; H.vy = 0; H.vx *= 0.25; H.y = b.top - HR - 6;
-  SFX.land();
-  if (b.flag) finishFlag();
-}
-
-function finishFlag() {
-  if (L.done) return;
-  L.done = 1; state = "won"; wonT = 0; SFX.win();
-  var tm = Math.round(L.time);
-  if (!SAVE.bestTime || SAVE.bestTime > tm) { SAVE.bestTime = tm; L.newBest = 1; }
-  save();
-  for (var k = 0; k < 70; k++) burst(H.x + rnd(-140, 140), H.y - rnd(0, 170), 1, ["#ffd84d", "#ff7ba8", "#7ef7a5", "#8fd8ff", "#ffffff"]);
-}
 
 function burst(x, y, n, cols) {
   for (var i = 0; i < n; i++) parts.push({
@@ -350,60 +329,45 @@ function burst(x, y, n, cols) {
 }
 function toast(kind, n) { toasts.push({ kind: kind, n: n || 0, t: 0 }); }
 
+function finishFlag() {
+  if (L.done) return;
+  L.done = 1; state = "won"; wonT = 0; SFX.win();
+  var tm = Math.round(L.time), lv = L.cfg.lv || 1;
+  if (!SAVE.times[lv] || SAVE.times[lv] > tm) { SAVE.times[lv] = tm; L.newBest = 1; }
+  L.lv = lv;
+  if (SAVE.level < MAXLVL && lv >= SAVE.level) SAVE.level = lv + 1;
+  save();
+  for (var k = 0; k < 70; k++) burst(H.x + rnd(-140, 140), H.y - rnd(0, 170), 1, ["#ffd84d", "#ff7ba8", "#7ef7a5", "#8fd8ff", "#ffffff"]);
+}
+
 /* ---------- the auto-swing brain ---------- */
 function autoSwing() {
-  if (H.bubble > 0) return;
   if (!held) { if (H.rope) letGo(); return; }
-  if (H.onRoof) {
-    H.vx = Math.max(H.vx, 0) + 6.6; H.vy = -9.6; H.onRoof = null;
-    if (!shootWeb()) SFX.swoosh();
-    return;
-  }
   if (H.cool > 0) { H.cool--; return; }
   if (!H.rope) {
-    /* fire again at the top of the arc, or straight away if we are dropping */
-    if (H.vy > -1.2 || H.since > 26) { if (!shootWeb()) H.since = 0; }
+    var low = H.y > LOWLINE - 120;
+    if (H.vy > -1.2 || low || H.since > 22) { if (!shootWeb()) H.since = 0; }
     return;
   }
-  /* anti-stall: never let him hang there doing nothing */
   var sp = hyp(H.vx, H.vy);
   if (sp < 3.2) H.stall++; else H.stall = 0;
-  if (H.stall > 26) { letGo(1); H.vx = Math.max(H.vx, 0) + 5.8; H.vy = -7.8; H.stall = 0; H.cool = 6; SFX.swoosh(); return; }
-  /* let go once we are heading up and forward — that is the launch */
+  if (H.stall > 26) { letGo(1); H.vx = Math.max(H.vx, 0) + 6.0; H.vy = -8.0; H.stall = 0; H.cool = 6; SFX.swoosh(); return; }
   var dx = H.x - H.rope.ax;
-  if (H.vx > 3 && H.vy < -1.5 && dx > -20) letGo();
-  else if (dx > H.rope.len * 0.40 && H.vy < 1.0 && H.vx > 2) letGo();
-  else if (dx > H.rope.len * 0.86) letGo();
+  /* hang on a little longer when he is low, so the swing lifts him back up */
+  var lowNow = H.y > LOWLINE - 160;
+  if (lowNow && H.vy < -1 && H.y > H.rope.ay + 220) return;
+  if (H.vx > 3 && H.vy < -1.6 && dx > -20) letGo();
+  else if (dx > H.rope.len * 0.42 && H.vy < 1.0 && H.vx > 2) letGo();
+  else if (dx > H.rope.len * 0.88) letGo();
 }
 
 /* ---------- physics ---------- */
 function stepPlay() {
   L.time += 1 / 60;
   H.t++; H.since++;
-  var i, b;
   if (H.arm > 0) H.arm = Math.max(0, H.arm - 0.06);
 
-  if (H.bubble > 0) {
-    H.bubble--;
-    H.x = lerp(H.x, H.bx, 0.07); H.y = lerp(H.y, H.by, 0.07);
-    H.vx = 0; H.vy = 0;
-    if (H.bubble === 0) { H.y = H.by; H.vy = 1; }
-    collectables(); progress();
-    return;
-  }
-
   autoSwing();
-
-  if (H.onRoof) {
-    H.y = H.onRoof.top - HR - 6;
-    H.vx *= 0.82; H.vy = 0;
-    H.x += H.vx;
-    if (H.x < H.onRoof.x - 4 || H.x > H.onRoof.x + H.onRoof.w + 4) H.onRoof = null;
-    collectables(); progress();
-    return;
-  }
-
-  var px = H.x, py = H.y;
 
   if (H.rope) {
     var dx = H.x - H.rope.ax, dy = H.y - H.rope.ay, d = hyp(dx, dy) || 1;
@@ -435,43 +399,29 @@ function stepPlay() {
   } else {
     H.vy += GRAV;
     H.vx *= 0.9985;
-    if (held && H.vx < 5.5) H.vx += 0.08;      /* never stall mid-air */
+    if (held && H.vx < 6) H.vx += 0.09;
     H.x += H.vx; H.y += H.vy;
   }
 
-  var sp = hyp(H.vx, H.vy);
-  if (sp > VMAX) { H.vx *= VMAX / sp; H.vy *= VMAX / sp; }
+  /* the street is a cushion, never a wall */
+  if (H.y > LOWLINE) {
+    var over = (H.y - LOWLINE) / 200;
+    H.vy -= (0.62 + over * 1.5);
+    if (H.y > GROUND - 210) { H.y = GROUND - 210; if (H.vy > 0) H.vy = -Math.abs(H.vy) * 0.5 - 3; }
+  }
+
+  var sp2 = hyp(H.vx, H.vy);
+  if (sp2 > VMAX) { H.vx *= VMAX / sp2; H.vy *= VMAX / sp2; }
   if (H.vx > 0.4) H.face = 1; else if (H.vx < -0.4) H.face = -1;
+  if (H.x < 40) { H.x = 40; H.vx = Math.abs(H.vx) * 0.4; }
+  if (H.y < -1400) { H.y = -1400; if (H.vy < 0) H.vy = 0; }
 
-  for (i = 0; i < L.B.length; i++) {
-    b = L.B[i];
-    if (H.x + HR < b.x || H.x - HR > b.x + b.w) continue;
-    if (H.y + HR < b.top) continue;
-    if (py + HR <= b.top + 2 && H.vy >= 0) { landOn(b); break; }
-    var reach = H.rope ? 150 : 110;
-    if (H.y - b.top < reach) {
-      var keep = H.vx;
-      landOn(b);
-      H.x = clamp(H.x, b.x + HR, b.x + b.w - HR);
-      H.vx = clamp(keep * 0.5, -4, 5);
-      burst(H.x, H.y + 10, 6, ["#ffffff", "#dfe9f2"]);
-      break;
-    }
-    if (px + HR <= b.x) { H.x = b.x - HR; H.vx = -Math.abs(H.vx) * 0.28; SFX.bump(); }
-    else if (px - HR >= b.x + b.w) { H.x = b.x + b.w + HR; H.vx = Math.abs(H.vx) * 0.28; SFX.bump(); }
-    else { H.y = b.top - HR - 1; H.vy = 0; }
-    if (H.rope && hyp(H.x - H.rope.ax, H.y - H.rope.ay) < 60) letGo(1);
+  if (L.end && !L.done) {
+    var fx = L.end.x + L.end.w - 46, fy = L.end.top - 84;
+    if (Math.abs(H.x - fx) < 90 && Math.abs(H.y - fy) < 190) finishFlag();
+    var ex = L.end.x + L.end.w + 340;
+    if (H.x > ex) { H.x = ex; H.vx = -Math.abs(H.vx) * 0.4; }
   }
-
-  if (H.y > GROUND - HR) {
-    H.y = GROUND - HR;
-    var tgt = L.B[L.B.length - 1];
-    for (i = 0; i < L.B.length; i++) if (L.B[i].x + L.B[i].w > H.x - 40) { tgt = L.B[i]; break; }
-    letGo(1); H.bubble = 80; H.bx = tgt.x + tgt.w / 2; H.by = tgt.top - HR - 6;
-    SFX.bubble();
-  }
-  if (H.x < 40) { H.x = 40; H.vx = Math.abs(H.vx) * 0.3; }
-  if (L.end) { var ex = L.end.x + L.end.w + 26; if (H.x > ex) { H.x = ex; H.vx = -Math.abs(H.vx) * 0.35; letGo(1); } }
 
   collectables(); progress();
 }
@@ -493,7 +443,7 @@ function collectables() {
   for (i = 0; i < L.stars.length; i++) {
     var s = L.stars[i];
     if (s.got) continue;
-    if (Math.abs(s.x - H.x) < 34 && Math.abs(s.y - H.y) < 34) {
+    if (Math.abs(s.x - H.x) < 36 && Math.abs(s.y - H.y) < 36) {
       s.got = 1; L.starGot++; SFX.star();
       burst(s.x, s.y, 7, ["#ffd84d", "#fff3b0"]);
     }
@@ -501,7 +451,7 @@ function collectables() {
   for (i = 0; i < L.vic.length; i++) {
     var v = L.vic[i];
     if (v.state) continue;
-    if (Math.abs(v.x - H.x) < 46 && Math.abs(v.y - H.y) < 52) {
+    if (Math.abs(v.x - H.x) < 52 && Math.abs(v.y - H.y) < 58) {
       v.state = 2; L.saved++; SFX.saved();
       burst(v.x, v.y - 10, 18, ["#7ef7a5", "#ffe27a", "#ffffff"]);
       toast("saved");
@@ -509,6 +459,7 @@ function collectables() {
     }
   }
 }
+
 /* ============================================================
    CAMERA + RENDER
    ============================================================ */
@@ -620,6 +571,31 @@ function drawBuilding(b) {
     var fg = ctx.createLinearGradient(0, y - 200, 0, y);
     fg.addColorStop(0, "rgba(255,216,77,0)"); fg.addColorStop(1, "rgba(255,216,77," + (0.16 + pulse2 * 0.16).toFixed(3) + ")");
     ctx.fillStyle = fg; ctx.fillRect(x + 10, y - 200, b.w - 20, 200);
+  }
+}
+
+function drawFore() {
+  var P = L.P, base = LH - (cam.y - CAMREF) * 1.34;
+  for (var i = 0; i < L.fore.length; i++) {
+    var b = L.fore[i], x = b.x - cam.x * 1.34;
+    if (x + b.w < -60 || x > LW + 60) continue;
+    var y = base - b.h;
+    var hsx = H.x - cam.x;
+    var over = hsx > x - 44 && hsx < x + b.w + 44;
+    ctx.globalAlpha = over ? 0.46 : 1;
+    ctx.fillStyle = P.bldD; ctx.fillRect(x, y, b.w, LH - y + 400);
+    ctx.fillStyle = "rgba(6,14,26,0.34)"; ctx.fillRect(x, y, b.w, LH - y + 400);
+    ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(x, y, 14, LH - y + 400);
+    ctx.fillStyle = "rgba(6,14,26,0.30)"; ctx.fillRect(x - 8, y - 16, b.w + 16, 18);
+    /* a few big windows so it reads as a building whipping past */
+    var r = seeded(Math.round(b.x) * 41 + 11);
+    ctx.fillStyle = P.night ? "rgba(255,233,163,0.30)" : "rgba(255,255,255,0.10)";
+    for (var row = 0; row < 14; row++) {
+      var wy = y + 40 + row * 74;
+      if (wy > LH + 40) break;
+      for (var c = 0; c < 3; c++) { if (r() > 0.45) ctx.fillRect(x + 22 + c * (b.w - 60) / 2.4, wy, 40, 48); }
+    }
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -752,7 +728,7 @@ function drawHeroBody(t, opt) {
 function drawHero() {
   var x = H.x - cam.x, y = H.y - cam.y;
   var ang = 0;
-  if (!H.onRoof) ang = clamp(Math.atan2(H.vy, H.vx) * (H.face > 0 ? 1 : -1), -1.15, 1.15) * 0.6;
+  ang = clamp(Math.atan2(H.vy, H.vx) * (H.face > 0 ? 1 : -1), -1.15, 1.15) * 0.6;
   var aim = 0;
   if (H.rope) {
     var lax = (H.rope.ax - cam.x - x) * H.face, lay = H.rope.ay - cam.y - y;
@@ -760,7 +736,7 @@ function drawHero() {
   }
   var HS = 1.32;
   ctx.save(); ctx.translate(x, y); ctx.scale(H.face * HS, HS); ctx.rotate(ang);
-  var hand = drawHeroBody(H.t, { rope: !!H.rope, roof: !!H.onRoof, aim: aim });
+  var hand = drawHeroBody(H.t, { rope: !!H.rope, roof: 0, aim: aim });
   ctx.restore();
   hand = { hx: hand.hx * HS, hy: hand.hy * HS };
   H.handX = x + Math.cos(ang) * hand.hx * H.face - Math.sin(ang) * hand.hy * H.face * 0;
@@ -885,6 +861,11 @@ function iconRescue(cx, cy, s) {
   ctx.beginPath(); ctx.moveTo(cx - r * 0.42, cy); ctx.lineTo(cx - r, cy - r * 0.7); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(cx + r * 0.42, cy); ctx.lineTo(cx + r, cy - r * 0.7); ctx.stroke();
 }
+function iconNext(cx, cy, s) {
+  ctx.fillStyle = "#ffffff"; var r = s * 0.22;
+  ctx.beginPath(); ctx.moveTo(cx - r * 0.9, cy - r); ctx.lineTo(cx + r * 0.2, cy); ctx.lineTo(cx - r * 0.9, cy + r); ctx.closePath(); ctx.fill();
+  rr(cx + r * 0.38, cy - r, r * 0.42, r * 2, 3); ctx.fill();
+}
 function iconStar(cx, cy, s) { ctx.fillStyle = "#ffd84d"; starPath(cx, cy, s * 0.26, 5, 0.45, 0); ctx.fill(); }
 
 /* ---------- title ---------- */
@@ -902,9 +883,20 @@ function titleBg() {
 function drawTitle() {
   titleT++;
   titleBg();
-  /* hero swinging across the title */
-  var a = Math.sin(titleT * 0.020) * 0.72;
-  var ax = LW * 0.5, ay = -34, len = 196;
+  shadowText("SKY SWING", LW / 2, 66, 60, "#ffffff");
+
+  var bw = 252, bh = 156, gap = 26, gx = (LW - 3 * bw - 2 * gap) / 2, gy = 246;
+  var lv = clamp(SAVE.level || 1, 1, MAXLVL);
+  modeCard("m_endless", gx, gy, bw, bh, "#2f6fd0", iconEndless, "DISTANCE", SAVE.bestDist ? SAVE.bestDist + " m" : "");
+  modeCard("m_flag", gx + bw + gap, gy, bw, bh, "#2ea05a", iconFlag, "LEVELS", "Lv " + lv);
+  modeCard("m_rescue", gx + 2 * (bw + gap), gy, bw, bh, "#d8232a", iconRescue, "RESCUE", SAVE.bestSaved ? String(SAVE.bestSaved) : "");
+
+  bigBtn("sfx", 24, LH - 72, 52, 52, SAVE.sfx ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconSpeaker(x, y, s, SAVE.sfx); });
+  bigBtn("mus", 88, LH - 72, 52, 52, SAVE.mus ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconNote(x, y, s, SAVE.mus); });
+
+  /* he swings across in front of everything */
+  var a = Math.sin(titleT * 0.020) * 0.80;
+  var ax = LW * 0.5, ay = -70, len = 290;
   var hx = ax + Math.sin(a) * len, hy = ay + Math.cos(a) * len;
   var ang = -a * 0.85;
   ctx.save(); ctx.translate(hx, hy); ctx.scale(1.95, 1.95); ctx.rotate(ang);
@@ -914,42 +906,33 @@ function drawTitle() {
   ctx.beginPath();
   ctx.moveTo(hx + (Math.cos(ang) * hand.hx - Math.sin(ang) * hand.hy) * 1.95, hy + (Math.sin(ang) * hand.hx + Math.cos(ang) * hand.hy) * 1.95);
   ctx.lineTo(ax, ay); ctx.stroke();
-
-  shadowText("SKY SWING", LW / 2, 74, 60, "#ffffff");
-
-  var bw = 252, bh = 138, gap = 26, gx = (LW - 3 * bw - 2 * gap) / 2, gy = 252;
-  modeCard("m_endless", gx, gy, bw, bh, "#2f6fd0", iconEndless, "endless", SAVE.bestDist ? SAVE.bestDist + " m" : "");
-  modeCard("m_flag", gx + bw + gap, gy, bw, bh, "#2ea05a", iconFlag, "flag", SAVE.bestTime ? SAVE.bestTime + " s" : "");
-  modeCard("m_rescue", gx + 2 * (bw + gap), gy, bw, bh, "#d8232a", iconRescue, "rescue", SAVE.bestSaved ? String(SAVE.bestSaved) : "");
-
-  bigBtn("sfx", 24, LH - 72, 52, 52, SAVE.sfx ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconSpeaker(x, y, s, SAVE.sfx); });
-  bigBtn("mus", 88, LH - 72, 52, 52, SAVE.mus ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconNote(x, y, s, SAVE.mus); });
 }
-function modeCard(id, x, y, w, h, col, icon, kind, best) {
+
+function modeCard(id, x, y, w, h, col, icon, label, best) {
   hit(id, x, y, w, h);
   ctx.fillStyle = "rgba(0,0,0,0.30)"; rr(x + 3, y + 6, w, h, 20); ctx.fill();
   ctx.fillStyle = col; rr(x, y, w, h, 20); ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 3; ctx.stroke();
-  icon(x + w / 2, y + h * 0.42, h * 0.92);
-  /* the little picture that says what the mode is */
-  if (kind === "endless") { ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.font = "800 30px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; }
+  icon(x + w / 2, y + h * 0.30, h * 0.78);
+  shadowText(label, x + w / 2, y + h * 0.63, 30, "#ffffff");
   if (best) {
-    ctx.fillStyle = "rgba(0,0,0,0.28)"; rr(x + w / 2 - 56, y + h - 44, 112, 32, 16); ctx.fill();
-    ctx.fillStyle = "#ffd84d"; starPath(x + w / 2 - 36, y + h - 28, 10, 5, 0.45, 0); ctx.fill();
-    shadowText(best, x + w / 2 + 12, y + h - 27, 20, "#ffffff");
+    ctx.fillStyle = "rgba(0,0,0,0.30)"; rr(x + w / 2 - 58, y + h - 44, 116, 32, 16); ctx.fill();
+    ctx.fillStyle = "#ffd84d"; starPath(x + w / 2 - 38, y + h - 28, 10, 5, 0.45, 0); ctx.fill();
+    shadowText(best, x + w / 2 + 10, y + h - 27, 20, "#ffffff");
   }
 }
 
 /* ---------- in-game HUD ---------- */
 function drawHUD() {
   if (L.mode === "flag") {
-    var pr = clamp((H.x - L.startX) / ((L.end ? L.end.x : 7200) - L.startX), 0, 1);
+    var pr = clamp((H.x - L.startX) / ((L.end ? L.end.x : L.cfg.end) - L.startX), 0, 1);
     ctx.fillStyle = "rgba(6,16,30,0.55)"; ctx.fillRect(0, 0, LW, 12);
     ctx.fillStyle = "#ffd84d"; ctx.fillRect(0, 0, LW * pr, 12);
     ctx.fillStyle = "#ffffff"; circ(LW * pr, 6, 8); ctx.fill();
-    ctx.fillStyle = "rgba(6,16,30,0.55)"; rr(16, 26, 108, 36, 18); ctx.fill();
+    ctx.fillStyle = "rgba(6,16,30,0.55)"; rr(16, 26, 168, 36, 18); ctx.fill();
     ctx.fillStyle = "#ffffff"; iconFlag(40, 44, 40);
-    shadowText(Math.round(L.time) + "s", 88, 45, 22, "#ffffff");
+    shadowText("Lv " + (L.cfg.lv || 1), 88, 45, 20, "#ffffff");
+    shadowText(Math.round(L.time) + "s", 152, 45, 20, "#ffd84d");
   } else {
     ctx.fillStyle = "rgba(6,16,30,0.55)"; rr(16, 22, 152, 40, 20); ctx.fill();
     shadowText(L.dist + " m", 92, 43, 26, "#ffffff");
@@ -1022,14 +1005,16 @@ function drawWon() {
   ctx.beginPath(); ctx.arc(LW / 2 - 42, LH / 2 - 102, 14, Math.PI * 0.4, Math.PI * 1.6); ctx.stroke();
   ctx.beginPath(); ctx.arc(LW / 2 + 42, LH / 2 - 102, 14, Math.PI * 1.4, Math.PI * 0.6); ctx.stroke();
   ctx.fillStyle = "#ffd84d"; ctx.fillRect(LW / 2 - 8, LH / 2 - 66, 16, 20); rr(LW / 2 - 30, LH / 2 - 48, 60, 12, 5); ctx.fill();
-  shadowText(Math.round(L.time) + "s", LW / 2 - 40, LH / 2 - 4, 34, "#ffffff");
+  shadowText("Lv " + (L.lv || 1), LW / 2 - 118, LH / 2 - 4, 30, "#7ef7a5");
+  shadowText(Math.round(L.time) + "s", LW / 2 - 18, LH / 2 - 4, 32, "#ffffff");
   ctx.fillStyle = "#ffd84d"; starPath(LW / 2 + 42, LH / 2 - 6, 18, 5, 0.45, 0); ctx.fill();
   shadowText(String(L.starGot), LW / 2 + 100, LH / 2 - 4, 30, "#ffffff");
   if (L.newBest) { ctx.globalAlpha = 0.9; shadowText("BEST!", LW / 2, LH / 2 + 40, 24, "#ffd84d"); ctx.globalAlpha = 1; }
   ctx.restore();
   if (wonT > 14) {
-    bigBtn("home", LW / 2 - 118, LH / 2 + 78, 100, 72, "#4b5a68", iconHome);
-    bigBtn("retry", LW / 2 + 18, LH / 2 + 78, 100, 72, "#2ea05a", iconRetry);
+    bigBtn("home", LW / 2 - 176, LH / 2 + 78, 96, 72, "#4b5a68", iconHome);
+    bigBtn("retry", LW / 2 - 48, LH / 2 + 78, 96, 72, "#2f6fd0", iconRetry);
+    bigBtn("next", LW / 2 + 80, LH / 2 + 78, 96, 72, "#2ea05a", iconNext);
   }
 }
 
@@ -1066,7 +1051,8 @@ function doAction(id) {
   if (id === "mus") { SAVE.mus = SAVE.mus ? 0 : 1; save(); return; }
   if (id === "pause") { held = false; down = {}; state = "paused"; return; }
   if (id === "resume") { state = "play"; return; }
-  if (id === "retry") { save(); return startRun(L.mode); }
+  if (id === "retry") { if (L.mode === "flag") forceLv = L.cfg.lv || 1; save(); return startRun(L.mode); }
+  if (id === "next") { save(); return startRun("flag"); }
   if (id === "home") { save(); state = "title"; held = false; down = {}; return; }
 }
 function onDown(e) {
@@ -1128,6 +1114,7 @@ function frame(ts) {
       ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3; circ(bx, by, 36); ctx.stroke(); ctx.globalAlpha = 1;
     }
     drawSpeed();
+    drawFore();
     drawParts();
     ctx.restore();
     drawHUD();
