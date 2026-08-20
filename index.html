@@ -117,23 +117,66 @@ var SFX = {
   win: function () { [523, 659, 784, 1046, 1318].forEach(function (f, i) { setTimeout(function () { blip(f, 0.26, "triangle", 0.20); }, i * 110); }); },
   tap: function () { blip(700, 0.06, "square", 0.10); }
 };
-var MUS = [0, 3, 7, 10, 12, 10, 7, 3];
+/* ---------- music ----------
+   An ORIGINAL retro cartoon-hero theme. The 1967 Spider-Man TV theme is a
+   copyrighted composition, so this is written in that spirit — same swaggering
+   minor-key brass riff and marching pulse — rather than a copy of it.
+   8 bars of eighth notes; null = rest. Semitone numbers are MIDI. */
+var M_LEAD = [
+  64, null, 67, null, 71, null, 76, null,      /* rising hero call        */
+  74, null, 71, null, 67, 69, null, null,      /* answer, falls back      */
+  72, null, 71, null, 69, null, 67, null,      /* walking down            */
+  66, 69, 71, null, null, null, null, null,    /* lift into the repeat    */
+  64, null, 67, null, 71, null, 74, null,      /* variation               */
+  76, null, 74, null, 71, null, 67, null,
+  69, null, 71, null, 72, null, 71, null,
+  64, null, null, null, null, null, null, null /* resolve                 */
+];
+var M_BASS = [
+  40, 40, 40, 40, 40, 40, 40, 40,
+  43, 43, 43, 43, 43, 43, 43, 43,
+  45, 45, 45, 45, 45, 45, 45, 45,
+  47, 47, 47, 47, 47, 47, 47, 47,
+  40, 40, 40, 40, 40, 40, 40, 40,
+  45, 45, 45, 45, 45, 45, 45, 45,
+  47, 47, 47, 47, 47, 47, 47, 47,
+  40, 40, 40, 40, 40, 40, 40, 40
+];
+var M_BPM = 126, M_STEP = 60 / M_BPM / 2;
+function midiHz(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+function musVoice(hz, dur, type, vol, dest, det) {
+  var t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = hz; if (det) o.detune.value = det;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.02);
+}
 function musicTick(dt) {
   if (!AC) return;
-  musGain.gain.value = SAVE.mus ? 0.16 : 0;
+  musGain.gain.value = SAVE.mus ? 0.20 : 0;
   if (!SAVE.mus) return;
   musTimer -= dt;
-  if (musTimer <= 0) {
-    musTimer = 0.42;
-    var base = 220 * Math.pow(2, MUS[musStep % MUS.length] / 12);
-    var t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
-    o.type = "sine"; o.frequency.value = base * (musStep % 8 < 4 ? 1 : 1.5);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.5, t + 0.06);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.75);
-    o.connect(g); g.connect(musGain); o.start(t); o.stop(t + 0.8);
-    musStep++;
+  if (musTimer > 0) return;
+  musTimer += M_STEP;
+  if (musTimer < 0) musTimer = M_STEP;
+  var i = musStep % M_LEAD.length;
+  var ln = M_LEAD[i], bn = M_BASS[i];
+  if (ln !== null) {
+    musVoice(midiHz(ln), 0.30, "square", 0.30, musGain);
+    musVoice(midiHz(ln - 12), 0.26, "triangle", 0.16, musGain, 6);
   }
+  if (bn !== null) musVoice(midiHz(bn), 0.16, "triangle", 0.42, musGain);
+  /* light off-beat tick to keep the march going */
+  if (i % 2 === 1 && AC) {
+    var n = Math.floor(AC.sampleRate * 0.035), buf = AC.createBuffer(1, n, AC.sampleRate), d = buf.getChannelData(0);
+    for (var k = 0; k < n; k++) d[k] = (Math.random() * 2 - 1) * (1 - k / n);
+    var src = AC.createBufferSource(); src.buffer = buf;
+    var f = AC.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 5000;
+    var g2 = AC.createGain(); g2.gain.value = 0.10;
+    src.connect(f); f.connect(g2); g2.connect(musGain); src.start();
+  }
+  musStep++;
 }
 
 /* ============================================================
@@ -372,8 +415,14 @@ function autoSwing() {
 
 /* ---------- physics ---------- */
 function stepPlay() {
+  H.t++;
+  /* nothing happens until he presses — he hovers on the spot, waiting */
+  if (!L.started) {
+    if (!held) { H.y += Math.sin(H.t * 0.05) * 0.5; H.vx = 0; H.vy = 0; return; }
+    L.started = 1; H.vx = 5.0; H.vy = -1.5;
+  }
   L.time += 1 / 60;
-  H.t++; H.since++;
+  H.since++;
   if (H.arm > 0) H.arm = Math.max(0, H.arm - 0.06);
 
   autoSwing();
@@ -768,6 +817,20 @@ function drawHero() {
   H.handY = y + Math.sin(ang) * hand.hx * H.face + Math.cos(ang) * hand.hy;
 }
 
+function drawAim() {
+  if (H.rope || state !== "play") return;
+  var a = findAnchor();
+  if (!a) return;
+  var ax = a.ax - cam.x, ay = a.ay - cam.y;
+  var p = 0.5 + 0.5 * Math.sin(H.t * 0.14);
+  ctx.globalAlpha = 0.30 + p * 0.28;
+  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+  circ(ax, ay, 12 + p * 6); ctx.stroke();
+  ctx.setLineDash([7, 11]); ctx.lineWidth = 2.4; ctx.globalAlpha = 0.24 + p * 0.16;
+  ctx.beginPath(); ctx.moveTo(H.x - cam.x, H.y - cam.y - 6); ctx.lineTo(ax, ay); ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+}
+
 function drawRope() {
   if (!H.rope) return;
   var ax = H.rope.ax - cam.x, ay = H.rope.ay - cam.y;
@@ -914,6 +977,11 @@ function drawTitle() {
   modeCard("m_flag", gx + bw + gap, gy, bw, bh, "#2ea05a", iconFlag, "LEVELS", "Lv " + lv);
   modeCard("m_rescue", gx + 2 * (bw + gap), gy, bw, bh, "#d8232a", iconRescue, "RESCUE", SAVE.bestSaved ? String(SAVE.bestSaved) : "");
 
+  var tp = Math.sin(titleT * 0.07) * 3;
+  ctx.fillStyle = "rgba(9,20,36,0.62)"; rr(LW / 2 - 176, LH - 82, 352, 60, 24); ctx.fill();
+  fingerIcon(LW / 2 - 132, LH - 54, 54, tp);
+  shadowText("HOLD TO SWING", LW / 2 + 22, LH - 51, 30, "#ffffff");
+
   bigBtn("sfx", 24, LH - 72, 52, 52, SAVE.sfx ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconSpeaker(x, y, s, SAVE.sfx); });
   bigBtn("mus", 88, LH - 72, 52, 52, SAVE.mus ? "#2f6fd0" : "#4b5a68", function (x, y, s) { iconNote(x, y, s, SAVE.mus); });
 
@@ -975,22 +1043,7 @@ function drawHUD() {
   shadowText(String(L.starGot), LW - 96, 41, 20, "#ffffff");
   if (state === "play" || state === "paused") bigBtn("pause", LW - 56, 22, 44, 40, "#2f6fd0", iconPause);
 
-  if (hintT > 0) {
-    hintT--;
-    var al = clamp(hintT / 70, 0, 1);
-    ctx.globalAlpha = al;
-    var hx = LW / 2, hy = LH - 62;
-    ctx.fillStyle = "rgba(6,16,30,0.72)"; rr(hx - 130, hy - 36, 260, 72, 22); ctx.fill();
-    var p = (H.t % 100) / 100;
-    ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 4;
-    circ(hx - 74, hy, 20 - p * 6); ctx.stroke();
-    ctx.fillStyle = "rgba(255,255,255,0.95)"; circ(hx - 74, hy, 12); ctx.fill();
-    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.arc(hx + 34, hy + 10, 40, Math.PI * 1.12, Math.PI * 1.92); ctx.stroke();
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath(); ctx.moveTo(hx + 74, hy - 4); ctx.lineTo(hx + 58, hy - 16); ctx.lineTo(hx + 60, hy + 4); ctx.closePath(); ctx.fill();
-    ctx.globalAlpha = 1;
-  }
+  drawHoldPrompt();
   for (var t = toasts.length - 1; t >= 0; t--) {
     var to = toasts[t]; to.t++;
     if (to.t > 90) { toasts.splice(t, 1); continue; }
@@ -1003,6 +1056,35 @@ function drawHUD() {
     else { ctx.fillStyle = "#ffffff"; iconRescue(LW / 2 - 40, ty, 52); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 6; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(LW / 2 + 6, ty + 2); ctx.lineTo(LW / 2 + 20, ty + 16); ctx.lineTo(LW / 2 + 46, ty - 14); ctx.stroke(); }
     ctx.globalAlpha = 1;
   }
+}
+
+function fingerIcon(cx, cy, s, press) {
+  ctx.fillStyle = "#ffffff";
+  rr(cx - s * 0.30, cy - s * 0.06 + press, s * 0.60, s * 0.42, s * 0.18); ctx.fill();    /* hand */
+  rr(cx - s * 0.11, cy - s * 0.50 + press, s * 0.22, s * 0.50, s * 0.11); ctx.fill();    /* finger */
+  ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = s * 0.07;
+  circ(cx, cy + s * 0.60, s * 0.26 + press * 0.7); ctx.stroke();
+  ctx.globalAlpha *= 0.5;
+  circ(cx, cy + s * 0.60, s * 0.42 + press * 1.1); ctx.stroke();
+  ctx.globalAlpha *= 2;
+}
+
+function drawHoldPrompt() {
+  if (state !== "play") return;
+  if (held && L.started) return;
+  var big = !L.started;
+  var p = (H.t % 90) / 90, press = Math.sin(p * TAU) * 4;
+  var pulse = 0.5 + 0.5 * Math.sin(H.t * 0.09);
+  var w = big ? 480 : 250, h = big ? 124 : 84;
+  var x = LW / 2 - w / 2, y = big ? LH - h - 34 : LH - h - 22;
+  ctx.globalAlpha = big ? 0.94 : 0.80;
+  ctx.fillStyle = "rgba(9,20,36,0.86)"; rr(x, y, w, h, 24); ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255," + (0.35 + pulse * 0.4).toFixed(2) + ")";
+  ctx.lineWidth = 4; rr(x, y, w, h, 24); ctx.stroke();
+  fingerIcon(x + (big ? 68 : 54), y + h * 0.40, big ? 72 : 56, press);
+  shadowText(big ? "HOLD ANYWHERE" : "HOLD", x + (big ? 290 : 158), y + h * (big ? 0.40 : 0.5), big ? 38 : 30, "#ffffff");
+  if (big) shadowText("to swing", x + 290, y + h * 0.74, 22, "#ffd84d");
+  ctx.globalAlpha = 1;
 }
 
 function drawPause() {
@@ -1081,9 +1163,15 @@ function doAction(id) {
 function onDown(e) {
   audioInit();
   if (AC && AC.state === "suspended") AC.resume();
-  var p = toLogical(e), id = hitAt(p);
-  if (id) { doAction(id); return; }
-  if (state === "play") { down[e.pointerId === undefined ? 0 : e.pointerId] = 1; hintT = Math.min(hintT, 40); pressStart(); }
+  var p = toLogical(e), id = hitAt(p), pid = e.pointerId === undefined ? 0 : e.pointerId;
+  if (id) {
+    doAction(id);
+    /* if that button started a run and the finger is still down, that finger flies him.
+       Without this, tapping a mode card and holding did nothing at all. */
+    if (state === "play" && id.indexOf("m_") === 0) { down[pid] = 1; pressStart(); }
+    return;
+  }
+  if (state === "play") { down[pid] = 1; pressStart(); }
 }
 function onUp(e) {
   delete down[e.pointerId === undefined ? 0 : e.pointerId];
@@ -1130,6 +1218,7 @@ function frame(ts) {
     drawStreet();
     for (var s = 0; s < L.stars.length; s++) drawStar(L.stars[s]);
     drawVictims();
+    drawAim();
     drawHero();
     drawRope();
     if (H.bubble > 0) {
