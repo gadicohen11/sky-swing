@@ -115,7 +115,9 @@ var SFX = {
   bump: function () { blip(120, 0.10, "square", 0.08, 70); },
   bubble: function () { blip(420, 0.30, "sine", 0.10, 900); },
   win: function () { [523, 659, 784, 1046, 1318].forEach(function (f, i) { setTimeout(function () { blip(f, 0.26, "triangle", 0.20); }, i * 110); }); },
-  tap: function () { blip(700, 0.06, "square", 0.10); }
+  tap: function () { blip(700, 0.06, "square", 0.10); },
+  thud: function () { blip(150, 0.22, "sine", 0.28, 50); noise(0.20, 0.20, 240); },
+  lose: function () { [440, 370, 294, 220].forEach(function (f, i) { setTimeout(function () { blip(f, 0.30, "triangle", 0.20); }, i * 150); }); }
 };
 /* ---------- music ----------
    An ORIGINAL retro cartoon-hero theme. The 1967 Spider-Man TV theme is a
@@ -220,6 +222,16 @@ var MODES = {
 };
 
 var L = null;
+function localRoof() {
+  var sum = 0, n = 0;
+  for (var i = 0; i < L.B.length; i++) {
+    var b = L.B[i];
+    if (Math.abs(b.x + b.w / 2 - H.x) < 760) { sum += b.top; n++; }
+  }
+  return n ? sum / n : GROUND - 560;
+}
+function lowErr() { return clamp((H.y - H.tgt) / 420, -1, 1); }   /* >0 = flying too low */
+
 function corridorY(x) { return GROUND - 430 + Math.sin(x * 0.00215) * 150 + Math.sin(x * 0.00071) * 70; }
 
 var MAXLVL = 8, forceLv = 0;
@@ -232,7 +244,7 @@ function newCity(mode) {
   L = {
     mode: mode, cfg: cfg, rng: seeded(Math.floor(Math.random() * 1e9) >>> 0),
     B: [], stars: [], vic: [], nextX: 120, drop: 0, starX: 420,
-    P: paletteAt(0), startX: 0, dist: 0, starGot: 0, saved: 0, time: 0,
+    P: paletteAt(0), startX: 0, dist: 0, starGot: 0, saved: 0, time: 0, started: 0,
     end: null, done: 0,
     far: [], mid: [], clouds: [], fore: [], nextFar: -400, nextMid: -400, nextCloud: -300, nextFore: 600
   };
@@ -262,7 +274,9 @@ function addChunk() {
     L.B.push(b);
     /* people to rescue, on roomy roofs */
     if (c.vic && L.B.length > 4 && w > 130 && R() < 0.34) {
-      L.vic.push({ x: b.x + b.w * 0.5, y: b.top - 20, state: 0, t: R() * 6 });
+      /* on a ledge partway down the building, where he actually flies past —
+         on the roof they were simply unreachable */
+      L.vic.push({ x: b.x + b.w * 0.5, y: b.top + 190 + R() * 170, state: 0, t: R() * 6, ledge: 1 });
     }
     /* a ribbon of stars along the line he actually swings through */
     while (L.starX < b.x + b.w) {
@@ -311,7 +325,8 @@ function cityUpdate(hx) {
    ============================================================ */
 var GRAV = 0.36, MAXR = 500, MINROPE = 200, REEL = 0.16, PUMP = 0.15, VMAX = 9.5, HR = 15;
 var CRUISE = 6.8;        /* he settles at this speed instead of accelerating forever */
-var LOWLINE = GROUND - 280;      /* get under this and the web pulls him back up */
+var FLOOR = GROUND - 120;        /* touch this and it counts as a fall */
+var LIVES = 3;
 var H = null, held = false;
 var parts = [], toasts = [];
 
@@ -319,7 +334,8 @@ function resetHero() {
   H = {
     x: 300, y: GROUND - 560, vx: 5.0, vy: -1.5,
     rope: null, face: 1, t: 0, since: 0, cool: 0, stall: 0,
-    bubble: 0, arm: 0, handX: undefined, handY: undefined
+    bubble: 0, arm: 0, handX: undefined, handY: undefined,
+    lives: LIVES, wait: 1, tgt: GROUND - 700, shake: 0, fell: 0
   };
 }
 
@@ -328,23 +344,33 @@ function resetHero() {
 function findAnchor() {
   var best = null, bestS = -1e9;
   var lead = H.x + H.vx * 16;
+  var le = lowErr();
+  var reach = MAXR * (1 + Math.max(0, le) * 0.45);   /* when low he can throw further */
   for (var i = 0; i < L.B.length; i++) {
     var b = L.B[i];
-    if (b.x + b.w < H.x - 200 || b.x > H.x + MAXR + 60) continue;
-    var cand = [b.x + 8, b.x + b.w * 0.35, b.x + b.w * 0.68, b.x + b.w - 8];
+    if (b.x + b.w < H.x - 200 || b.x > H.x + reach + 60) continue;
+    /* the whole face of the building is fair game — roof corners AND points down
+       the wall, so when he is low there is always something just above him */
+    var cand = [];
+    var xs = [b.x + 10, b.x + b.w * 0.5, b.x + b.w - 10];
+    for (var xi = 0; xi < 3; xi++) {
+      cand.push([xs[xi], b.top - 6]);
+      for (var yy = b.top + 130; yy < GROUND - 150; yy += 150) cand.push([xs[xi], yy]);
+    }
     for (var c = 0; c < cand.length; c++) {
-      var ax = cand[c], ay = b.top - 6;
+      var ax = cand[c][0], ay = cand[c][1];
       if (ay > H.y - 60) continue;
       var dx = ax - H.x, dyUp = H.y - ay;
       var d = hyp(dx, dyUp);
-      if (d > MAXR || d < 110) continue;
+      if (d > reach || d < 100) continue;
       if (dx < -60) continue;
       var ang = Math.atan2(dyUp, Math.abs(dx) < 1 ? 1 : dx);
       var sc = 3.0 - 2.2 * Math.abs(ang - 0.88);
+      if (ay < b.top + 20) sc += 0.35;                 /* a rooftop is a nicer swing than a wall */
       if (dx < 60) sc -= 1.5;
-      sc += 1.4 * (1 - Math.abs(d - 330) / MAXR);
-      sc += 0.9 * (1 - Math.abs(ax - lead) / MAXR);
-      if (H.y > LOWLINE - 180) sc += 1.2 * clamp(dyUp / 400, 0, 1);   /* low down: reach high */
+      sc += 1.4 * (1 - Math.abs(d - 330) / reach);
+      sc += 0.9 * (1 - Math.abs(ax - lead) / reach);
+      if (le > 0) sc += le * 3.2 * clamp(dyUp / 460, 0, 1);          /* low down: grab something HIGH */
       if (sc > bestS) { bestS = sc; best = { ax: ax, ay: ay }; }
     }
   }
@@ -367,6 +393,49 @@ function shootWeb() {
 function letGo(quiet) {
   if (H.rope) { H.rope = null; H.since = 0; H.cool = 14; if (!quiet) SFX.release(); }
 }
+function launchOff(le) {
+  if (!H.rope) return;
+  letGo();
+  /* a real up-and-forward launch, so each swing gains height instead of losing it */
+  var up = 2.0 + Math.max(0, le) * 4.2;
+  H.vy -= up;
+  H.vx += 0.7 + Math.max(0, le) * 0.9;
+  var sp = hyp(H.vx, H.vy);
+  if (sp > VMAX * 1.35) { H.vx *= VMAX * 1.35 / sp; H.vy *= VMAX * 1.35 / sp; }
+}
+
+function doFall() {
+  if (H.bubble > 0 || L.done) return;
+  H.lives--; H.fell++;
+  letGo(1);
+  H.y = FLOOR; H.vx = 0; H.vy = 0;
+  H.shake = 16;
+  SFX.thud();
+  burst(H.x, FLOOR + 10, 18, ["#cfd9e2", "#ffffff"]);
+  if (H.lives <= 0) { gameOver(); return; }
+  /* lift him back up on a web line to a rooftop ahead, then he carries on */
+  var tgt = null;
+  for (var i = 0; i < L.B.length; i++) {
+    var b = L.B[i];
+    if (b.x + b.w > H.x + 40) { tgt = b; break; }
+  }
+  if (!tgt) tgt = L.B[L.B.length - 1];
+  H.bubble = 70;
+  H.bx = tgt.x + tgt.w * 0.5;
+  H.by = tgt.top + 150;
+  SFX.bubble();
+  toast("life");
+}
+
+function gameOver() {
+  L.done = 1; state = "lost"; wonT = 0;
+  letGo(1); H.vx = 0; H.vy = 0;
+  SFX.lose();
+  if (L.mode === "endless" && L.dist > (SAVE.bestDist || 0)) { SAVE.bestDist = L.dist; L.newBest = 1; }
+  if (L.mode === "rescue" && L.saved > (SAVE.bestSaved || 0)) { SAVE.bestSaved = L.saved; L.newBest = 1; }
+  save();
+}
+
 function pressStart() { held = true; }
 function pressEnd() { held = false; }
 
@@ -396,7 +465,7 @@ function autoSwing() {
   if (!H.rope) {
     /* wait for the top of the glide before throwing the next web, so there is a
        clear arc between swings instead of a stutter of them */
-    var low = H.y > LOWLINE - 140;
+    var low = lowErr() > 0.1;
     if (H.vy > -0.25 || low || H.since > 90) { if (!shootWeb()) H.since = 0; }
     return;
   }
@@ -407,15 +476,30 @@ function autoSwing() {
   /* one long swing: ride it well past the anchor before letting go */
   if (H.rope.age < 45) return;
   var dx = H.x - H.rope.ax;
-  if (H.y > LOWLINE - 170 && H.vy < -0.5) return;          /* low: keep riding, it lifts him */
-  if (dx > H.rope.len * 0.50 && H.vy < -0.3) letGo();
-  else if (dx > H.rope.len * 0.90) letGo();
-  else if (H.rope.age > 260) letGo();
+  var le = lowErr();
+  /* while he islow, stay on the rope through the whole upswing — that is what lifts him */
+  if (le > 0.1 && H.vy < -0.4 && dx < H.rope.len * 0.95) return;
+  if (dx > H.rope.len * 0.50 && H.vy < -0.3) launchOff(le);
+  else if (dx > H.rope.len * 0.90) launchOff(le);
+  else if (H.rope.age > 260) launchOff(le);
 }
 
 /* ---------- physics ---------- */
 function stepPlay() {
   H.t++;
+  if (H.shake > 0) H.shake--;
+  H.tgt = localRoof() + 170;
+
+  /* being lifted back up after a fall */
+  if (H.bubble > 0) {
+    H.bubble--;
+    H.x = lerp(H.x, H.bx, 0.075); H.y = lerp(H.y, H.by, 0.075);
+    H.vx = 0; H.vy = 0;
+    if (H.bubble === 0) { H.vx = 4.6; H.vy = -1.0; H.cool = 0; H.since = 99; }
+    progress();
+    return;
+  }
+
   /* nothing happens until he presses — he hovers on the spot, waiting */
   if (!L.started) {
     if (!held) { H.y += Math.sin(H.t * 0.05) * 0.5; H.vx = 0; H.vy = 0; return; }
@@ -438,7 +522,7 @@ function stepPlay() {
         var boost = clamp((CRUISE - sp0) / CRUISE, 0, 1);
         H.vx += tx * dir * PUMP * boost; H.vy += ty * dir * PUMP * boost;
       }
-      if (H.rope.len > MINROPE && ny > 0.2) H.rope.len -= REEL;
+      if (H.rope.len > MINROPE && ny > 0.2) H.rope.len -= REEL * (1 + Math.max(0, lowErr()) * 3.4);
     } else if (H.rope.len > MINROPE + 40) {
       H.rope.len -= REEL * 1.6;
       if (H.rope.len < d) H.rope.len = d;
@@ -459,12 +543,7 @@ function stepPlay() {
     H.x += H.vx; H.y += H.vy;
   }
 
-  /* the street is a cushion, never a wall */
-  if (H.y > LOWLINE) {
-    var over = (H.y - LOWLINE) / 200;
-    H.vy -= (0.34 + over * 0.9);
-    if (H.y > GROUND - 210) { H.y = GROUND - 210; if (H.vy > 0) H.vy = -Math.abs(H.vy) * 0.5 - 1.6; }
-  }
+  if (H.y > FLOOR) doFall();
 
   if (held && H.vx < 3.4) H.vx += 0.032;
   var sp2 = hyp(H.vx, H.vy);
@@ -519,18 +598,19 @@ function collectables() {
 /* ============================================================
    CAMERA + RENDER
    ============================================================ */
-var cam = { x: 0, y: 0, z: 1 };
+var ZOOM = 0.74;                 /* pulled back so the whole swing arc reads */
+var cam = { x: 0, y: 0, z: ZOOM };
 function camUpdate(snap) {
   /* the camera follows a SMOOTHED version of his motion. Following the raw
      velocity is what made the whole picture shudder on every swing. */
   H.smx = H.smx === undefined ? H.vx : lerp(H.smx, H.vx, 0.035);
   H.smy = H.smy === undefined ? H.vy : lerp(H.smy, H.vy, 0.035);
-  var tx = H.x - LW * 0.36 + clamp(H.smx * 16, -90, 130);
-  var ty = H.y - LH * 0.46 + clamp(H.smy * 8, -70, 90);
+  var tx = H.x - LW * 0.40 / ZOOM + clamp(H.smx * 16, -90, 130) + LW * (1 / ZOOM - 1) * 0.5;
+  var ty = H.y - LH * 0.46 / ZOOM + clamp(H.smy * 8, -70, 90) + LH * (1 / ZOOM - 1) * 0.54;
   ty = Math.min(ty, GROUND + 40 - LH);
-  if (snap) { cam.x = tx; cam.y = ty; cam.z = 1; }
+  if (snap) { cam.x = tx; cam.y = ty; }
   else { cam.x = lerp(cam.x, tx, 0.055); cam.y = lerp(cam.y, ty, 0.05); }
-  cam.z = 1;
+  cam.z = ZOOM;
   cam.x = Math.max(cam.x, -60);
 }
 
@@ -582,50 +662,37 @@ function drawSkyline(list, par, col, alpha) {
 }
 
 function drawBuilding(b) {
-  var P = L.P, x = b.x - cam.x, y = b.top - cam.y, h = GROUND - b.top + 300;
-  if (x + b.w < -30 || x > LW + 30) return;
+  var P = L.P, x = b.x - cam.x, y = b.top - cam.y, h = GROUND - b.top + 400;
+  if (x + b.w < -40 || x > LW + 40) return;
+  /* flat block with a darker right-hand face — the reference look */
   ctx.fillStyle = P.bld; ctx.fillRect(x, y, b.w, h);
-  ctx.fillStyle = P.bldD; ctx.fillRect(x + b.w - 12, y, 12, h);
-  /* roof cap */
-  ctx.fillStyle = P.roof; ctx.fillRect(x - 4, y - 10, b.w + 8, 12);
-  /* windows */
-  var r = seeded(Math.round(b.x) * 31 + 7);
-  var cols = Math.max(1, Math.floor((b.w - 26) / 30));
-  var padx = (b.w - cols * 22) / (cols + 1);
-  ctx.fillStyle = P.win;
-  for (var row = 0; row < 26; row++) {
-    var wy = y + 30 + row * 40;
-    if (wy > GROUND - cam.y - 20) break;
-    if (wy > LH + 20) break;
-    for (var cIdx = 0; cIdx < cols; cIdx++) {
-      var lit = r();
-      if (wy < -30) continue;
-      ctx.globalAlpha = P.night ? (lit > 0.45 ? 0.95 : 0.10) : (lit > 0.7 ? 0.85 : 0.45);
-      ctx.fillRect(x + padx + cIdx * (22 + padx), wy, 22, 26);
+  var side = Math.max(12, b.w * 0.12);
+  ctx.fillStyle = P.bldD; ctx.fillRect(x + b.w - side, y, side, h);
+  ctx.fillStyle = P.roof; ctx.fillRect(x, y, b.w - side, 7);
+  ctx.fillStyle = P.bldD; ctx.fillRect(x + b.w - side, y, side, 7);
+  /* only the night skyline gets lit windows */
+  if (P.night) {
+    var r = seeded(Math.round(b.x) * 31 + 7);
+    var cols = Math.max(1, Math.floor((b.w - side - 20) / 34));
+    var padx = (b.w - side - cols * 20) / (cols + 1);
+    ctx.fillStyle = P.win;
+    for (var row = 0; row < 30; row++) {
+      var wy = y + 34 + row * 52;
+      if (wy > GROUND - cam.y - 30 || wy > LH + 40) break;
+      if (wy < -40) continue;
+      for (var ci = 0; ci < cols; ci++) {
+        if (r() < 0.42) { ctx.globalAlpha = 0.85; ctx.fillRect(x + padx + ci * (20 + padx), wy, 20, 26); }
+        else r();
+      }
     }
+    ctx.globalAlpha = 1;
   }
-  ctx.globalAlpha = 1;
-  /* roof props */
-  var pr = seeded(Math.round(b.x) * 17 + 3);
-  if (b.w > 110 && !b.flag && y > -60 && y < LH + 40) {
-    var kind = Math.floor(pr() * 3);
-    ctx.fillStyle = P.roof;
-    if (kind === 0) { rr(x + 14, y - 34, 30, 26, 5); ctx.fill(); ctx.fillStyle = P.bldD; ctx.fillRect(x + 20, y - 44, 5, 12); ctx.fillRect(x + 33, y - 44, 5, 12); }
-    else if (kind === 1) {
-      ctx.strokeStyle = P.roof; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(x + b.w - 34, y - 8); ctx.lineTo(x + b.w - 34, y - 62); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x + b.w - 46, y - 34); ctx.lineTo(x + b.w - 22, y - 34); ctx.stroke();
-      ctx.fillStyle = "#ff6b6b"; circ(x + b.w - 34, y - 66, 4); ctx.fill();
-    } else { ctx.fillStyle = P.roof; rr(x + b.w * 0.5 - 22, y - 22, 44, 16, 4); ctx.fill(); rr(x + 12, y - 16, 20, 10, 3); ctx.fill(); }
-  }
-  /* flag tower */
   if (b.flag) {
-    /* full-height finish banner — he flies past well below the roof */
-    var bx0 = x + b.w * 0.30, bw0 = b.w * 0.40;
+    var bx0 = x + b.w * 0.28, bw0 = (b.w - side) * 0.44;
     ctx.globalAlpha = 0.28; ctx.fillStyle = "#ffd84d"; ctx.fillRect(bx0 - 24, y - 6, bw0 + 48, LH + 400); ctx.globalAlpha = 1;
     ctx.fillStyle = "#ffffff"; ctx.fillRect(bx0, y - 4, bw0, LH + 400);
     ctx.fillStyle = "#d8232a";
-    for (var q = 0; q < 40; q++) {
+    for (var q = 0; q < 44; q++) {
       var qy = y + q * 46;
       if (qy > LH + 60) break;
       ctx.fillRect(bx0 + (q % 2 ? 0 : bw0 / 2), qy, bw0 / 2, 46);
@@ -637,10 +704,6 @@ function drawBuilding(b) {
     var wav = Math.sin(H.t * 0.09) * 5;
     ctx.beginPath(); ctx.moveTo(fx, fy - 96); ctx.quadraticCurveTo(fx + 36, fy - 88 + wav, fx + 66, fy - 80);
     ctx.lineTo(fx + 66, fy - 52); ctx.quadraticCurveTo(fx + 34, fy - 60 - wav, fx, fy - 58); ctx.closePath(); ctx.fill();
-    var pulse2 = 0.5 + 0.5 * Math.sin(H.t * 0.07);
-    var fg = ctx.createLinearGradient(0, y - 200, 0, y);
-    fg.addColorStop(0, "rgba(255,216,77,0)"); fg.addColorStop(1, "rgba(255,216,77," + (0.16 + pulse2 * 0.16).toFixed(3) + ")");
-    ctx.fillStyle = fg; ctx.fillRect(x + 10, y - 200, b.w - 20, 200);
   }
 }
 
@@ -653,29 +716,23 @@ function drawFore() {
     var hsx = H.x - cam.x;
     var over = hsx > x - 44 && hsx < x + b.w + 44;
     ctx.globalAlpha = over ? 0.46 : 1;
-    ctx.fillStyle = P.bldD; ctx.fillRect(x, y, b.w, LH - y + 400);
-    ctx.fillStyle = "rgba(6,14,26,0.34)"; ctx.fillRect(x, y, b.w, LH - y + 400);
-    ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(x, y, 14, LH - y + 400);
-    ctx.fillStyle = "rgba(6,14,26,0.30)"; ctx.fillRect(x - 8, y - 16, b.w + 16, 18);
-    /* a few big windows so it reads as a building whipping past */
-    var r = seeded(Math.round(b.x) * 41 + 11);
-    ctx.fillStyle = P.night ? "rgba(255,233,163,0.30)" : "rgba(255,255,255,0.10)";
-    for (var row = 0; row < 14; row++) {
-      var wy = y + 40 + row * 74;
-      if (wy > LH + 40) break;
-      for (var c = 0; c < 3; c++) { if (r() > 0.45) ctx.fillRect(x + 22 + c * (b.w - 60) / 2.4, wy, 40, 48); }
-    }
+    ctx.fillStyle = P.night ? "#20402f" : "#8a9a5b";
+    ctx.fillRect(x, y, b.w, LH - y + 400);
+    ctx.fillStyle = "rgba(6,14,26,0.26)"; ctx.fillRect(x + b.w - 26, y, 26, LH - y + 400);
+    ctx.fillStyle = "rgba(0,0,0,0.14)"; ctx.fillRect(x, y, b.w - 26, 8);
     ctx.globalAlpha = 1;
   }
 }
 
 function drawStreet() {
   var P = L.P, y = GROUND - cam.y;
-  if (y > LH + 40) return;
-  var g = ctx.createLinearGradient(0, y - 220, 0, y + 60);
+  if (y > LH + 200) return;
+  var g = ctx.createLinearGradient(0, y - 190, 0, y);
   g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, P.fog);
-  ctx.fillStyle = g; ctx.fillRect(0, y - 220, LW, 280);
-  ctx.fillStyle = P.night ? "#1a2440" : "#8a99a8"; ctx.fillRect(0, y, LW, LH);
+  ctx.globalAlpha = 0.30; ctx.fillStyle = g; ctx.fillRect(0, y - 190, LW, 190); ctx.globalAlpha = 1;
+  ctx.fillStyle = P.night ? "#16203a" : "#8b98a6";
+  ctx.fillRect(0, y, LW, LH + 400);
+  ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(0, y, LW, 5);
 }
 
 function drawStar(s) {
@@ -708,6 +765,14 @@ function drawPerson(x, y, s, body, wave, sad) {
 function drawVictims() {
   for (var i = 0; i < L.vic.length; i++) {
     var v = L.vic[i];
+    if (v.ledge) {
+      var lx = v.x - cam.x, ly = v.y - cam.y;
+      if (lx > -80 && lx < LW + 80) {
+        ctx.fillStyle = L.P.roof; rr(lx - 34, ly + 18, 68, 10, 3); ctx.fill();
+        ctx.strokeStyle = L.P.roof; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(lx - 30, ly + 18); ctx.lineTo(lx - 30, ly - 2); ctx.moveTo(lx + 30, ly + 18); ctx.lineTo(lx + 30, ly - 2); ctx.stroke();
+      }
+    }
     var x = v.x - cam.x, y = v.y - cam.y;
     if (x < -60 || x > LW + 60) continue;
     var wave = v.state === 2 ? 1 : (Math.sin(H.t * 0.16 + v.t) > 0 ? 1 : 0.2);
@@ -795,6 +860,16 @@ function drawHeroBody(t, opt) {
   return { hx: hx2, hy: hy2 };
 }
 
+function drawShadow() {
+  var gy = GROUND - cam.y, x = H.x - cam.x;
+  if (gy < -40 || gy > LH + 300) return;
+  var h = clamp((GROUND - H.y) / 900, 0, 1);
+  ctx.globalAlpha = 0.26 * (1 - h * 0.72);
+  ctx.fillStyle = "#1b2733";
+  ctx.beginPath(); ctx.ellipse(x, gy - 6, 26 - h * 12, 7 - h * 3, 0, 0, TAU); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
 function drawHero() {
   var x = H.x - cam.x, y = H.y - cam.y;
   var tAng = clamp(Math.atan2(H.vy, H.vx) * (H.face > 0 ? 1 : -1), -1.15, 1.15) * 0.55;
@@ -823,9 +898,15 @@ function drawAim() {
   if (!a) return;
   var ax = a.ax - cam.x, ay = a.ay - cam.y;
   var p = 0.5 + 0.5 * Math.sin(H.t * 0.14);
-  ctx.globalAlpha = 0.30 + p * 0.28;
-  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
-  circ(ax, ay, 12 + p * 6); ctx.stroke();
+  ctx.globalAlpha = 0.34 + p * 0.30;
+  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.6;
+  circ(ax, ay, 8); ctx.stroke();
+  circ(ax, ay, 15 + p * 5); ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(ax - 22, ay); ctx.lineTo(ax - 13, ay); ctx.moveTo(ax + 13, ay); ctx.lineTo(ax + 22, ay);
+  ctx.moveTo(ax, ay - 22); ctx.lineTo(ax, ay - 13); ctx.moveTo(ax, ay + 13); ctx.lineTo(ax, ay + 22);
+  ctx.stroke();
   ctx.setLineDash([7, 11]); ctx.lineWidth = 2.4; ctx.globalAlpha = 0.24 + p * 0.16;
   ctx.beginPath(); ctx.moveTo(H.x - cam.x, H.y - cam.y - 6); ctx.lineTo(ax, ay); ctx.stroke();
   ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -1038,6 +1119,19 @@ function drawHUD() {
       shadowText(String(L.saved), 254, 43, 24, "#ffffff");
     }
   }
+  /* lives */
+  for (var li = 0; li < LIVES; li++) {
+    var lx = LW - 300 + li * 42, ly = 40, alive = li < H.lives;
+    ctx.globalAlpha = alive ? 1 : 0.28;
+    ctx.fillStyle = alive ? "#d8232a" : "#5a6b7a";
+    ctx.beginPath();
+    ctx.moveTo(lx, ly + 9);
+    ctx.bezierCurveTo(lx - 15, ly - 3, lx - 9, ly - 15, lx, ly - 7);
+    ctx.bezierCurveTo(lx + 9, ly - 15, lx + 15, ly - 3, lx, ly + 9);
+    ctx.closePath(); ctx.fill();
+    if (alive) { ctx.fillStyle = "rgba(255,255,255,0.55)"; circ(lx - 4, ly - 5, 2.2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
   ctx.fillStyle = "rgba(6,16,30,0.55)"; rr(LW - 152, 22, 90, 36, 18); ctx.fill();
   ctx.fillStyle = "#ffd84d"; starPath(LW - 130, 40, 12, 5, 0.45, 0); ctx.fill();
   shadowText(String(L.starGot), LW - 96, 41, 20, "#ffffff");
@@ -1050,9 +1144,15 @@ function drawHUD() {
     var a2 = to.t < 12 ? to.t / 12 : to.t > 70 ? (90 - to.t) / 20 : 1;
     ctx.globalAlpha = a2;
     var ty = 118 - (to.t > 70 ? (to.t - 70) : 0);
-    ctx.fillStyle = to.kind === "best" ? "rgba(216,35,42,0.94)" : "rgba(46,160,90,0.94)";
+    ctx.fillStyle = to.kind === "best" ? "rgba(216,35,42,0.94)" : to.kind === "life" ? "rgba(120,40,52,0.94)" : "rgba(46,160,90,0.94)";
     rr(LW / 2 - 90, ty - 26, 180, 52, 22); ctx.fill();
     if (to.kind === "best") { ctx.fillStyle = "#ffd84d"; starPath(LW / 2 - 46, ty, 18, 5, 0.45, to.t * 0.06); ctx.fill(); shadowText("!", LW / 2 + 30, ty, 30, "#ffffff"); }
+    else if (to.kind === "life") {
+      ctx.fillStyle = "#ff8a95";
+      ctx.beginPath(); ctx.moveTo(LW / 2 - 34, ty + 8); ctx.bezierCurveTo(LW / 2 - 52, ty - 8, LW / 2 - 44, ty - 22, LW / 2 - 34, ty - 10);
+      ctx.bezierCurveTo(LW / 2 - 24, ty - 22, LW / 2 - 16, ty - 8, LW / 2 - 34, ty + 8); ctx.closePath(); ctx.fill();
+      shadowText(H.lives + " left", LW / 2 + 22, ty, 24, "#ffffff");
+    }
     else { ctx.fillStyle = "#ffffff"; iconRescue(LW / 2 - 40, ty, 52); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 6; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(LW / 2 + 6, ty + 2); ctx.lineTo(LW / 2 + 20, ty + 16); ctx.lineTo(LW / 2 + 46, ty - 14); ctx.stroke(); }
     ctx.globalAlpha = 1;
   }
@@ -1085,6 +1185,36 @@ function drawHoldPrompt() {
   shadowText(big ? "HOLD ANYWHERE" : "HOLD", x + (big ? 290 : 158), y + h * (big ? 0.40 : 0.5), big ? 38 : 30, "#ffffff");
   if (big) shadowText("to swing", x + 290, y + h * 0.74, 22, "#ffd84d");
   ctx.globalAlpha = 1;
+}
+
+function drawLost() {
+  wonT++;
+  ctx.fillStyle = "rgba(4,12,24,0.62)"; ctx.fillRect(0, 0, LW, LH);
+  var pop = clamp(wonT / 16, 0, 1), sc = 0.72 + pop * 0.28;
+  ctx.save(); ctx.translate(LW / 2, LH / 2); ctx.scale(sc, sc); ctx.translate(-LW / 2, -LH / 2);
+  panel(LW / 2 - 240, LH / 2 - 132, 480, 256);
+  /* three empty hearts */
+  for (var i = 0; i < LIVES; i++) {
+    var lx = LW / 2 - 62 + i * 62, ly = LH / 2 - 74;
+    ctx.globalAlpha = 0.35; ctx.fillStyle = "#5a6b7a";
+    ctx.beginPath(); ctx.moveTo(lx, ly + 14);
+    ctx.bezierCurveTo(lx - 24, ly - 5, lx - 14, ly - 24, lx, ly - 11);
+    ctx.bezierCurveTo(lx + 14, ly - 24, lx + 24, ly - 5, lx, ly + 14);
+    ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  if (L.mode === "flag") shadowText("Lv " + (L.cfg.lv || 1), LW / 2, LH / 2 - 6, 40, "#ffffff");
+  else if (L.mode === "rescue") {
+    ctx.fillStyle = "#7ef7a5"; iconRescue(LW / 2 - 70, LH / 2 - 6, 60);
+    shadowText(String(L.saved), LW / 2 + 10, LH / 2 - 6, 40, "#ffffff");
+  } else shadowText(L.dist + " m", LW / 2, LH / 2 - 6, 40, "#ffffff");
+  ctx.fillStyle = "#ffd84d"; starPath(LW / 2 - 40, LH / 2 + 44, 16, 5, 0.45, 0); ctx.fill();
+  shadowText(String(L.starGot), LW / 2 + 16, LH / 2 + 46, 26, "#ffffff");
+  if (L.newBest) shadowText("BEST!", LW / 2, LH / 2 + 84, 22, "#ffd84d");
+  ctx.restore();
+  if (wonT > 14) {
+    bigBtn("home", LW / 2 - 118, LH / 2 + 74, 100, 72, "#4b5a68", iconHome);
+    bigBtn("retry", LW / 2 + 18, LH / 2 + 74, 100, 72, "#2ea05a", iconRetry);
+  }
 }
 
 function drawPause() {
@@ -1157,6 +1287,7 @@ function doAction(id) {
   if (id === "pause") { held = false; down = {}; state = "paused"; return; }
   if (id === "resume") { state = "play"; return; }
   if (id === "retry") { if (L.mode === "flag") forceLv = L.cfg.lv || 1; save(); return startRun(L.mode); }
+  if (id === "pause" && state !== "play") return;
   if (id === "next") { save(); return startRun("flag"); }
   if (id === "home") { save(); state = "title"; held = false; down = {}; return; }
 }
@@ -1208,16 +1339,18 @@ function frame(ts) {
   else {
     if (state === "play") { acc += dt; var n = 0; while (acc >= 1 / 60 && n < 8) { stepPlay(); acc -= 1 / 60; n++; }
       if (acc > 0.25) acc = 0; camUpdate(false); }
-    else if (state === "won") { H.t++; camUpdate(false); }
+    else if (state === "won" || state === "lost") { H.t++; camUpdate(false); }
     drawSky();
     ctx.save();
     ctx.translate(LW / 2, LH * 0.54); ctx.scale(cam.z, cam.z); ctx.translate(-LW / 2, -LH * 0.54);
+    if (H.shake > 0) ctx.translate(rnd(-H.shake, H.shake) * 0.6, rnd(-H.shake, H.shake) * 0.6);
     drawSkyline(L.far, 0.35, L.P.far, 0.55);
     drawSkyline(L.mid, 0.6, L.P.mid, 0.75);
     for (var i = 0; i < L.B.length; i++) drawBuilding(L.B[i]);
     drawStreet();
     for (var s = 0; s < L.stars.length; s++) drawStar(L.stars[s]);
     drawVictims();
+    drawShadow();
     drawAim();
     drawHero();
     drawRope();
@@ -1233,6 +1366,7 @@ function frame(ts) {
     drawHUD();
     if (state === "paused") drawPause();
     if (state === "won") drawWon();
+    if (state === "lost") drawLost();
   }
   ctx.restore();
 }
