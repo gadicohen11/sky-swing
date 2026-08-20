@@ -281,7 +281,7 @@ function addChunk() {
     /* a ribbon of stars along the line he actually swings through */
     while (L.starX < b.x + b.w) {
       L.stars.push({ x: L.starX, y: corridorY(L.starX), got: 0, t: R() * 6 });
-      L.starX += 118;
+      L.starX += 200;
     }
     x += w + Math.round(c.gap[0] + R() * (c.gap[1] - c.gap[0]));
   }
@@ -290,11 +290,11 @@ function addChunk() {
 
 function extendBack(hx) {
   var R = L.rng;
-  var fTo = hx * 0.62 + LW + 400, mTo = hx * 0.8 + LW + 400, cTo = hx * 0.24 + LW + 600;
+  var fTo = hx * 0.78 + LW + 400;
 
-  while (L.nextFar < fTo) { var w = 50 + R() * 130; L.far.push({ x: L.nextFar, w: w, h: 240 + R() * 620 }); L.nextFar += w + 8 + R() * 60; }
-  while (L.nextMid < mTo) { var w2 = 70 + R() * 140; L.mid.push({ x: L.nextMid, w: w2, h: 380 + R() * 860 }); L.nextMid += w2 + 10 + R() * 70; }
-  while (L.nextCloud < cTo) { L.clouds.push({ x: L.nextCloud, y: GROUND - 700 - R() * 700, s: 0.6 + R() * 1.1 }); L.nextCloud += 160 + R() * 380; }
+  while (L.nextFar < fTo) { var w = 90 + R() * 170; L.far.push({ x: L.nextFar, w: w, h: 300 + R() * 700 }); L.nextFar += w + 30 + R() * 110; }
+
+
 }
 
 function cityUpdate(hx) {
@@ -305,9 +305,7 @@ function cityUpdate(hx) {
   while (L.B.length > 3 && L.B[0].x + L.B[0].w < cut && !L.B[0].flag) L.B.shift();
   while (L.stars.length && L.stars[0].x < cut) L.stars.shift();
   while (L.vic.length && L.vic[0].x < cut - 400) L.vic.shift();
-  while (L.far.length && L.far[0].x < cut * 0.62 - 400) L.far.shift();
-  while (L.mid.length && L.mid[0].x < cut * 0.8 - 400) L.mid.shift();
-  while (L.clouds.length && L.clouds[0].x < cut * 0.24 - 400) L.clouds.shift();
+  while (L.far.length && L.far[0].x < cut * 0.78 - 400) L.far.shift();
   while (L.fore.length && L.fore[0].x < cut * 1.34 - 600) L.fore.shift();
   if (L.mode !== "flag") L.P = paletteAt(hx);
 }
@@ -365,7 +363,8 @@ function findAnchor() {
       if (dx < 60) sc -= 1.5;
       sc += 1.4 * (1 - Math.abs(d - 330) / reach);
       sc += 0.9 * (1 - Math.abs(ax - lead) / reach);
-      if (le > 0) sc += le * 3.2 * clamp(dyUp / 460, 0, 1);          /* low down: grab something HIGH */
+      sc += (le > 0 ? le * 3.2 : 0) * clamp(dyUp / 460, 0, 1);
+      sc += H.climb * 2.4 * clamp(dyUp / 520, 0, 1);                 /* holding longer = reach higher */
       if (sc > bestS) { bestS = sc; best = { ax: ax, ay: ay }; }
     }
   }
@@ -392,7 +391,7 @@ function launchOff(le) {
   if (!H.rope) return;
   letGo();
   /* a real up-and-forward launch, so each swing gains height instead of losing it */
-  var up = 2.6 + Math.max(0, le) * 5.4;
+  var up = 2.6 + Math.max(0, le) * 5.4 + H.climb * 3.0;
   H.vy -= up;
   H.vx += 0.7 + Math.max(0, le) * 0.9;
   var sp = hyp(H.vx, H.vy);
@@ -417,7 +416,7 @@ function doFall() {
   if (!tgt) tgt = L.B[L.B.length - 1];
   H.bubble = 70;
   H.bx = tgt.x + tgt.w * 0.5;
-  H.by = tgt.top + 150;
+  H.by = tgt.top + 70;
   SFX.bubble();
   toast("life");
 }
@@ -484,10 +483,10 @@ function stepPlay() {
   H.t++;
   if (H.shake > 0) H.shake--;
   /* holding climbs him toward the tops of the towers; letting go lets him sink back */
-  if (held && H.bubble === 0 && L.started) H.climb = Math.min(1, H.climb + 1 / 260);
-  else H.climb = Math.max(0, H.climb - 1 / 110);
+  if (held && H.bubble === 0 && L.started) H.climb = Math.min(1, H.climb + 1 / 640);   /* ~11s of holding to reach the top */
+  else H.climb = Math.max(0, H.climb - 1 / 150);
   var ri = roofInfo();
-  H.tgt = lerp(ri.avg + 210, ri.top + 90, H.climb);
+  H.tgt = lerp(ri.avg + 210, ri.top + 110, H.climb);   /* reachable: just under the tallest roof */
 
   /* being lifted back up after a fall */
   if (H.bubble > 0) {
@@ -521,8 +520,8 @@ function stepPlay() {
         var boost = clamp((CRUISE - sp0) / CRUISE, 0, 1);
         H.vx += tx * dir * PUMP * boost; H.vy += ty * dir * PUMP * boost;
       }
-      if (H.rope.len > MINROPE && ny > 0.2) H.rope.len -= REEL * (1 + Math.max(0, lowErr()) * 4.6);
-    } else if (H.rope.len > MINROPE + 40) {
+      if (H.rope.len > MINROPE - H.climb * 95 && ny > 0.2) H.rope.len -= REEL * (1 + Math.max(0, lowErr()) * 4.6 + H.climb * 1.6);
+    } else if (H.rope.len > MINROPE - H.climb * 95 + 40) {
       H.rope.len -= REEL * 1.6;
       if (H.rope.len < d) H.rope.len = d;
     }
@@ -634,17 +633,6 @@ function drawSky() {
       ctx.globalAlpha = 0.3 + r() * 0.6; ctx.fillRect(x, y, 2, 2);
     }
     ctx.globalAlpha = 1;
-  }
-  /* clouds */
-  ctx.fillStyle = P.night ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.34)";
-  for (var c = 0; c < L.clouds.length; c++) {
-    var cl = L.clouds[c], x2 = cl.x - cam.x * 0.24, y2 = cl.y - cam.y * 0.24;
-    if (x2 < -300 || x2 > LW + 300) continue;
-    var s = cl.s;
-    circ(x2, y2, 30 * s); ctx.fill();
-    circ(x2 + 34 * s, y2 + 6 * s, 24 * s); ctx.fill();
-    circ(x2 - 32 * s, y2 + 8 * s, 20 * s); ctx.fill();
-    circ(x2 + 12 * s, y2 - 16 * s, 22 * s); ctx.fill();
   }
 }
 
@@ -1346,8 +1334,7 @@ function frame(ts) {
     ctx.save();
     ctx.translate(LW / 2, LH * 0.54); ctx.scale(cam.z, cam.z); ctx.translate(-LW / 2, -LH * 0.54);
     if (H.shake > 0) ctx.translate(rnd(-H.shake, H.shake) * 0.6, rnd(-H.shake, H.shake) * 0.6);
-    drawSkyline(L.far, 0.62, L.P.far, 0.30);
-    drawSkyline(L.mid, 0.80, L.P.mid, 0.42);
+    drawSkyline(L.far, 0.78, L.P.far, 0.26);
     for (var i = 0; i < L.B.length; i++) drawBuilding(L.B[i]);
     drawStreet();
     for (var s = 0; s < L.stars.length; s++) drawStar(L.stars[s]);
