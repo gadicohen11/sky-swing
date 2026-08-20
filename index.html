@@ -222,17 +222,17 @@ var MODES = {
 };
 
 var L = null;
-function localRoof() {
-  var sum = 0, n = 0;
+function roofInfo() {
+  var sum = 0, n = 0, top = GROUND - 400;
   for (var i = 0; i < L.B.length; i++) {
     var b = L.B[i];
-    if (Math.abs(b.x + b.w / 2 - H.x) < 760) { sum += b.top; n++; }
+    if (Math.abs(b.x + b.w / 2 - H.x) < 820) { sum += b.top; n++; if (b.top < top) top = b.top; }
   }
-  return n ? sum / n : GROUND - 560;
+  return { avg: n ? sum / n : GROUND - 700, top: top };
 }
-function lowErr() { return clamp((H.y - H.tgt) / 420, -1, 1); }   /* >0 = flying too low */
+function lowErr() { return clamp((H.y - H.tgt) / 420, -0.4, 1); }   /* >0 = flying too low */
 
-function corridorY(x) { return GROUND - 640 + Math.sin(x * 0.00215) * 170 + Math.sin(x * 0.00071) * 80; }
+function corridorY(x) { return GROUND - 800 + Math.sin(x * 0.00215) * 150 + Math.sin(x * 0.00071) * 80; }
 
 var MAXLVL = 8, forceLv = 0;
 function newCity(mode) {
@@ -290,13 +290,8 @@ function addChunk() {
 
 function extendBack(hx) {
   var R = L.rng;
-  var fTo = hx * 0.35 + LW + 400, mTo = hx * 0.6 + LW + 400, cTo = hx * 0.14 + LW + 600;
-  var gTo = hx * 1.34 + LW + 500;
-  while (L.nextFore < gTo) {
-    var fw = 130 + R() * 150;
-    L.fore.push({ x: L.nextFore, w: fw, h: 900 + R() * 1200 });
-    L.nextFore += fw + 620 + R() * 900;
-  }
+  var fTo = hx * 0.62 + LW + 400, mTo = hx * 0.8 + LW + 400, cTo = hx * 0.24 + LW + 600;
+
   while (L.nextFar < fTo) { var w = 50 + R() * 130; L.far.push({ x: L.nextFar, w: w, h: 240 + R() * 620 }); L.nextFar += w + 8 + R() * 60; }
   while (L.nextMid < mTo) { var w2 = 70 + R() * 140; L.mid.push({ x: L.nextMid, w: w2, h: 380 + R() * 860 }); L.nextMid += w2 + 10 + R() * 70; }
   while (L.nextCloud < cTo) { L.clouds.push({ x: L.nextCloud, y: GROUND - 700 - R() * 700, s: 0.6 + R() * 1.1 }); L.nextCloud += 160 + R() * 380; }
@@ -310,9 +305,9 @@ function cityUpdate(hx) {
   while (L.B.length > 3 && L.B[0].x + L.B[0].w < cut && !L.B[0].flag) L.B.shift();
   while (L.stars.length && L.stars[0].x < cut) L.stars.shift();
   while (L.vic.length && L.vic[0].x < cut - 400) L.vic.shift();
-  while (L.far.length && L.far[0].x < cut * 0.35 - 400) L.far.shift();
-  while (L.mid.length && L.mid[0].x < cut * 0.6 - 400) L.mid.shift();
-  while (L.clouds.length && L.clouds[0].x < cut * 0.14 - 400) L.clouds.shift();
+  while (L.far.length && L.far[0].x < cut * 0.62 - 400) L.far.shift();
+  while (L.mid.length && L.mid[0].x < cut * 0.8 - 400) L.mid.shift();
+  while (L.clouds.length && L.clouds[0].x < cut * 0.24 - 400) L.clouds.shift();
   while (L.fore.length && L.fore[0].x < cut * 1.34 - 600) L.fore.shift();
   if (L.mode !== "flag") L.P = paletteAt(hx);
 }
@@ -334,7 +329,7 @@ function resetHero() {
   H = {
     x: 300, y: GROUND - 900, vx: 5.0, vy: -1.5,
     rope: null, face: 1, t: 0, since: 0, cool: 0, stall: 0,
-    bubble: 0, arm: 0, handX: undefined, handY: undefined,
+    bubble: 0, arm: 0, climb: 0, handX: undefined, handY: undefined,
     lives: LIVES, wait: 1, tgt: GROUND - 700, shake: 0, fell: 0
   };
 }
@@ -488,7 +483,11 @@ function autoSwing() {
 function stepPlay() {
   H.t++;
   if (H.shake > 0) H.shake--;
-  H.tgt = localRoof() + 170;
+  /* holding climbs him toward the tops of the towers; letting go lets him sink back */
+  if (held && H.bubble === 0 && L.started) H.climb = Math.min(1, H.climb + 1 / 260);
+  else H.climb = Math.max(0, H.climb - 1 / 110);
+  var ri = roofInfo();
+  H.tgt = lerp(ri.avg + 210, ri.top + 90, H.climb);
 
   /* being lifted back up after a fall */
   if (H.bubble > 0) {
@@ -538,7 +537,10 @@ function stepPlay() {
       H.vx -= nx * rad; H.vy -= ny * rad;
     }
   } else {
-    H.vy += GRAV;
+    /* fingers off = a slow glide down, not a plummet — releasing is a control,
+       not an instant death */
+    if (held) H.vy += GRAV;
+    else { H.vy += GRAV * 0.40; if (H.vy > 4.0) H.vy = 4.0; }
     H.vx *= 0.9995;
     H.x += H.vx; H.y += H.vy;
   }
@@ -634,9 +636,9 @@ function drawSky() {
     ctx.globalAlpha = 1;
   }
   /* clouds */
-  ctx.fillStyle = P.night ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.62)";
+  ctx.fillStyle = P.night ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.34)";
   for (var c = 0; c < L.clouds.length; c++) {
-    var cl = L.clouds[c], x2 = cl.x - cam.x * 0.14, y2 = cl.y - cam.y * 0.14;
+    var cl = L.clouds[c], x2 = cl.x - cam.x * 0.24, y2 = cl.y - cam.y * 0.24;
     if (x2 < -300 || x2 > LW + 300) continue;
     var s = cl.s;
     circ(x2, y2, 30 * s); ctx.fill();
@@ -1344,8 +1346,8 @@ function frame(ts) {
     ctx.save();
     ctx.translate(LW / 2, LH * 0.54); ctx.scale(cam.z, cam.z); ctx.translate(-LW / 2, -LH * 0.54);
     if (H.shake > 0) ctx.translate(rnd(-H.shake, H.shake) * 0.6, rnd(-H.shake, H.shake) * 0.6);
-    drawSkyline(L.far, 0.35, L.P.far, 0.55);
-    drawSkyline(L.mid, 0.6, L.P.mid, 0.75);
+    drawSkyline(L.far, 0.62, L.P.far, 0.30);
+    drawSkyline(L.mid, 0.80, L.P.mid, 0.42);
     for (var i = 0; i < L.B.length; i++) drawBuilding(L.B[i]);
     drawStreet();
     for (var s = 0; s < L.stars.length; s++) drawStar(L.stars[s]);
@@ -1360,7 +1362,6 @@ function frame(ts) {
       ctx.globalAlpha = 0.9; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3; circ(bx, by, 36); ctx.stroke(); ctx.globalAlpha = 1;
     }
     drawSpeed();
-    drawFore();
     drawParts();
     ctx.restore();
     drawHUD();
