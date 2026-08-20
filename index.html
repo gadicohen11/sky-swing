@@ -171,20 +171,20 @@ function paletteAt(x) {
 
 /* ---------- modes ---------- */
 var MODES = {
-  endless: { gap: [70, 165], hi: [300, 720], vic: 0, end: 0 },
+  endless: { gap: [70, 165], hi: [380, 800], vic: 0, end: 0 },
   flag:    { gap: [70, 150], hi: [300, 620], vic: 0, end: 7200 },
-  rescue:  { gap: [70, 165], hi: [300, 700], vic: 1, end: 0 }
+  rescue:  { gap: [70, 165], hi: [380, 780], vic: 1, end: 0 }
 };
 
 var L = null;
-function corridorY(x) { return GROUND - 690 + Math.sin(x * 0.00215) * 205 + Math.sin(x * 0.00071) * 90; }
+function corridorY(x) { return GROUND - 430 + Math.sin(x * 0.00215) * 150 + Math.sin(x * 0.00071) * 70; }
 
 var MAXLVL = 8, forceLv = 0;
 function newCity(mode) {
   var cfg = MODES[mode];
   if (mode === "flag") {
     var lv = clamp(forceLv || SAVE.level || 1, 1, MAXLVL); forceLv = 0;
-    cfg = { gap: [70, 140 + lv * 12], hi: [300, 600 + lv * 40], vic: 0, end: 9000 + (lv - 1) * 1800, lv: lv };
+    cfg = { gap: [70, 140 + lv * 12], hi: [360, 700 + lv * 30], vic: 0, end: 4500 + (lv - 1) * 600, lv: lv };
   }
   L = {
     mode: mode, cfg: cfg, rng: seeded(Math.floor(Math.random() * 1e9) >>> 0),
@@ -266,14 +266,15 @@ function cityUpdate(hx) {
    onto — he never collides with them. Only the sky and the street
    below have any say in where he goes.
    ============================================================ */
-var GRAV = 0.58, MAXR = 560, MINROPE = 165, REEL = 0.42, PUMP = 0.16, VMAX = 31, HR = 15;
-var LOWLINE = GROUND - 390;      /* get under this and the web pulls him back up */
+var GRAV = 0.36, MAXR = 500, MINROPE = 200, REEL = 0.16, PUMP = 0.15, VMAX = 9.5, HR = 15;
+var CRUISE = 6.8;        /* he settles at this speed instead of accelerating forever */
+var LOWLINE = GROUND - 280;      /* get under this and the web pulls him back up */
 var H = null, held = false;
 var parts = [], toasts = [];
 
 function resetHero() {
   H = {
-    x: 300, y: GROUND - 820, vx: 7.5, vy: 0,
+    x: 300, y: GROUND - 560, vx: 5.0, vy: -1.5,
     rope: null, face: 1, t: 0, since: 0, cool: 0, stall: 0,
     bubble: 0, arm: 0, handX: undefined, handY: undefined
   };
@@ -283,7 +284,7 @@ function resetHero() {
    in front of the buildings, exactly like it does in the real thing. */
 function findAnchor() {
   var best = null, bestS = -1e9;
-  var lead = H.x + H.vx * 7;
+  var lead = H.x + H.vx * 16;
   for (var i = 0; i < L.B.length; i++) {
     var b = L.B[i];
     if (b.x + b.w < H.x - 200 || b.x > H.x + MAXR + 60) continue;
@@ -298,7 +299,7 @@ function findAnchor() {
       var ang = Math.atan2(dyUp, Math.abs(dx) < 1 ? 1 : dx);
       var sc = 3.0 - 2.2 * Math.abs(ang - 0.88);
       if (dx < 60) sc -= 1.5;
-      sc += 1.4 * (1 - Math.abs(d - 370) / MAXR);
+      sc += 1.4 * (1 - Math.abs(d - 330) / MAXR);
       sc += 0.9 * (1 - Math.abs(ax - lead) / MAXR);
       if (H.y > LOWLINE - 180) sc += 1.2 * clamp(dyUp / 400, 0, 1);   /* low down: reach high */
       if (sc > bestS) { bestS = sc; best = { ax: ax, ay: ay }; }
@@ -310,13 +311,18 @@ function findAnchor() {
 function shootWeb() {
   var a = findAnchor();
   if (!a) return false;
-  H.rope = { ax: a.ax, ay: a.ay, len: hyp(a.ax - H.x, a.ay - H.y) };
+  /* lock the swing direction once, at the moment he attaches — flipping it
+     mid-swing was what made the whole thing shudder */
+  var dx = H.x - a.ax, dy = H.y - a.ay, d = hyp(dx, dy) || 1;
+  var tv = H.vx * (-dy / d) + H.vy * (dx / d);
+  var dir = Math.abs(tv) > 0.8 ? (tv >= 0 ? 1 : -1) : -(H.face) * (dy >= 0 ? 1 : -1);
+  H.rope = { ax: a.ax, ay: a.ay, len: d, dir: dir, age: 0 };
   H.since = 0; H.arm = 1;
   SFX.thwip();
   return true;
 }
 function letGo(quiet) {
-  if (H.rope) { H.rope = null; H.since = 0; H.cool = 7; if (!quiet) SFX.release(); }
+  if (H.rope) { H.rope = null; H.since = 0; H.cool = 14; if (!quiet) SFX.release(); }
 }
 function pressStart() { held = true; }
 function pressEnd() { held = false; }
@@ -345,20 +351,23 @@ function autoSwing() {
   if (!held) { if (H.rope) letGo(); return; }
   if (H.cool > 0) { H.cool--; return; }
   if (!H.rope) {
-    var low = H.y > LOWLINE - 120;
-    if (H.vy > -1.2 || low || H.since > 22) { if (!shootWeb()) H.since = 0; }
+    /* wait for the top of the glide before throwing the next web, so there is a
+       clear arc between swings instead of a stutter of them */
+    var low = H.y > LOWLINE - 140;
+    if (H.vy > -0.25 || low || H.since > 90) { if (!shootWeb()) H.since = 0; }
     return;
   }
+  H.rope.age++;
   var sp = hyp(H.vx, H.vy);
-  if (sp < 3.2) H.stall++; else H.stall = 0;
-  if (H.stall > 26) { letGo(1); H.vx = Math.max(H.vx, 0) + 6.0; H.vy = -8.0; H.stall = 0; H.cool = 6; SFX.swoosh(); return; }
+  if (sp < 1.0) H.stall++; else H.stall = 0;
+  if (H.stall > 60) { letGo(1); H.vx = Math.max(H.vx, 0) + 3.4; H.vy = -3.6; H.stall = 0; H.cool = 14; SFX.swoosh(); return; }
+  /* one long swing: ride it well past the anchor before letting go */
+  if (H.rope.age < 45) return;
   var dx = H.x - H.rope.ax;
-  /* hang on a little longer when he is low, so the swing lifts him back up */
-  var lowNow = H.y > LOWLINE - 160;
-  if (lowNow && H.vy < -1 && H.y > H.rope.ay + 220) return;
-  if (H.vx > 3 && H.vy < -1.6 && dx > -20) letGo();
-  else if (dx > H.rope.len * 0.42 && H.vy < 1.0 && H.vx > 2) letGo();
-  else if (dx > H.rope.len * 0.88) letGo();
+  if (H.y > LOWLINE - 170 && H.vy < -0.5) return;          /* low: keep riding, it lifts him */
+  if (dx > H.rope.len * 0.50 && H.vy < -0.3) letGo();
+  else if (dx > H.rope.len * 0.90) letGo();
+  else if (H.rope.age > 260) letGo();
 }
 
 /* ---------- physics ---------- */
@@ -372,18 +381,17 @@ function stepPlay() {
   if (H.rope) {
     var dx = H.x - H.rope.ax, dy = H.y - H.rope.ay, d = hyp(dx, dy) || 1;
     var nx = dx / d, ny = dy / d;
-    var taut = d > H.rope.len - 3;
+    var taut = d > H.rope.len - 7;                 /* hysteresis: no frame-to-frame flapping */
     if (taut) {
-      var tx = -ny, ty = nx;
-      var tv = H.vx * tx + H.vy * ty;
-      var dir;
-      if (Math.abs(tv) > 1.2) dir = tv >= 0 ? 1 : -1;
-      else dir = -H.face * (ny >= 0 ? 1 : -1);
-      var boost = 1 + clamp(2 - Math.abs(tv) / 6, 0, 1.6);
-      H.vx += tx * dir * PUMP * boost; H.vy += ty * dir * PUMP * boost;
-      if (H.rope.len > MINROPE && ny > 0.15) H.rope.len -= REEL;
+      var tx = -ny, ty = nx, sp0 = hyp(H.vx, H.vy);
+      var dir = H.rope.dir;
+      if (sp0 < CRUISE) {                         /* only ever top him up to a walking-pace cruise */
+        var boost = clamp((CRUISE - sp0) / CRUISE, 0, 1);
+        H.vx += tx * dir * PUMP * boost; H.vy += ty * dir * PUMP * boost;
+      }
+      if (H.rope.len > MINROPE && ny > 0.2) H.rope.len -= REEL;
     } else if (H.rope.len > MINROPE + 40) {
-      H.rope.len -= REEL * 1.5;
+      H.rope.len -= REEL * 1.6;
       if (H.rope.len < d) H.rope.len = d;
     }
     H.vy += GRAV;
@@ -398,27 +406,26 @@ function stepPlay() {
     }
   } else {
     H.vy += GRAV;
-    H.vx *= 0.9985;
-    if (held && H.vx < 6) H.vx += 0.09;
+    H.vx *= 0.9995;
     H.x += H.vx; H.y += H.vy;
   }
 
   /* the street is a cushion, never a wall */
   if (H.y > LOWLINE) {
     var over = (H.y - LOWLINE) / 200;
-    H.vy -= (0.62 + over * 1.5);
-    if (H.y > GROUND - 210) { H.y = GROUND - 210; if (H.vy > 0) H.vy = -Math.abs(H.vy) * 0.5 - 3; }
+    H.vy -= (0.34 + over * 0.9);
+    if (H.y > GROUND - 210) { H.y = GROUND - 210; if (H.vy > 0) H.vy = -Math.abs(H.vy) * 0.5 - 1.6; }
   }
 
+  if (held && H.vx < 3.4) H.vx += 0.032;
   var sp2 = hyp(H.vx, H.vy);
   if (sp2 > VMAX) { H.vx *= VMAX / sp2; H.vy *= VMAX / sp2; }
-  if (H.vx > 0.4) H.face = 1; else if (H.vx < -0.4) H.face = -1;
+  if (H.vx > 1.6) H.face = 1; else if (H.vx < -1.6) H.face = -1;
   if (H.x < 40) { H.x = 40; H.vx = Math.abs(H.vx) * 0.4; }
   if (H.y < -1400) { H.y = -1400; if (H.vy < 0) H.vy = 0; }
 
   if (L.end && !L.done) {
-    var fx = L.end.x + L.end.w - 46, fy = L.end.top - 84;
-    if (Math.abs(H.x - fx) < 90 && Math.abs(H.y - fy) < 190) finishFlag();
+    if (H.x > L.end.x + 70) finishFlag();       /* crossing the tower finishes it, at any height */
     var ex = L.end.x + L.end.w + 340;
     if (H.x > ex) { H.x = ex; H.vx = -Math.abs(H.vx) * 0.4; }
   }
@@ -443,7 +450,7 @@ function collectables() {
   for (i = 0; i < L.stars.length; i++) {
     var s = L.stars[i];
     if (s.got) continue;
-    if (Math.abs(s.x - H.x) < 36 && Math.abs(s.y - H.y) < 36) {
+    if (Math.abs(s.x - H.x) < 46 && Math.abs(s.y - H.y) < 46) {
       s.got = 1; L.starGot++; SFX.star();
       burst(s.x, s.y, 7, ["#ffd84d", "#fff3b0"]);
     }
@@ -465,12 +472,16 @@ function collectables() {
    ============================================================ */
 var cam = { x: 0, y: 0, z: 1 };
 function camUpdate(snap) {
-  var tx = H.x - LW * 0.34 + clamp(H.vx * 7, -120, 160);
-  var ty = H.y - LH * 0.46 + clamp(H.vy * 4, -80, 110);
+  /* the camera follows a SMOOTHED version of his motion. Following the raw
+     velocity is what made the whole picture shudder on every swing. */
+  H.smx = H.smx === undefined ? H.vx : lerp(H.smx, H.vx, 0.035);
+  H.smy = H.smy === undefined ? H.vy : lerp(H.smy, H.vy, 0.035);
+  var tx = H.x - LW * 0.36 + clamp(H.smx * 16, -90, 130);
+  var ty = H.y - LH * 0.46 + clamp(H.smy * 8, -70, 90);
   ty = Math.min(ty, GROUND + 40 - LH);
-  var tz = 1 - clamp((hyp(H.vx, H.vy) - 9) / 30, 0, 1) * 0.16;
-  if (snap) { cam.x = tx; cam.y = ty; cam.z = tz; }
-  else { cam.x = lerp(cam.x, tx, 0.12); cam.y = lerp(cam.y, ty, 0.10); cam.z = lerp(cam.z, tz, 0.05); }
+  if (snap) { cam.x = tx; cam.y = ty; cam.z = 1; }
+  else { cam.x = lerp(cam.x, tx, 0.055); cam.y = lerp(cam.y, ty, 0.05); }
+  cam.z = 1;
   cam.x = Math.max(cam.x, -60);
 }
 
@@ -560,6 +571,16 @@ function drawBuilding(b) {
   }
   /* flag tower */
   if (b.flag) {
+    /* full-height finish banner — he flies past well below the roof */
+    var bx0 = x + b.w * 0.30, bw0 = b.w * 0.40;
+    ctx.globalAlpha = 0.28; ctx.fillStyle = "#ffd84d"; ctx.fillRect(bx0 - 24, y - 6, bw0 + 48, LH + 400); ctx.globalAlpha = 1;
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(bx0, y - 4, bw0, LH + 400);
+    ctx.fillStyle = "#d8232a";
+    for (var q = 0; q < 40; q++) {
+      var qy = y + q * 46;
+      if (qy > LH + 60) break;
+      ctx.fillRect(bx0 + (q % 2 ? 0 : bw0 / 2), qy, bw0 / 2, 46);
+    }
     var fx = x + b.w - 46, fy = y - 10;
     ctx.strokeStyle = "#dfe9f2"; ctx.lineWidth = 5;
     ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx, fy - 96); ctx.stroke();
@@ -727,8 +748,10 @@ function drawHeroBody(t, opt) {
 
 function drawHero() {
   var x = H.x - cam.x, y = H.y - cam.y;
-  var ang = 0;
-  ang = clamp(Math.atan2(H.vy, H.vx) * (H.face > 0 ? 1 : -1), -1.15, 1.15) * 0.6;
+  var tAng = clamp(Math.atan2(H.vy, H.vx) * (H.face > 0 ? 1 : -1), -1.15, 1.15) * 0.55;
+  if (H.ang === undefined) H.ang = tAng;
+  H.ang = lerp(H.ang, tAng, 0.10);
+  var ang = H.ang;
   var aim = 0;
   if (H.rope) {
     var lax = (H.rope.ax - cam.x - x) * H.face, lay = H.rope.ay - cam.y - y;
@@ -761,7 +784,7 @@ function drawRope() {
 }
 function drawSpeed() {
   var sp = hyp(H.vx, H.vy);
-  if (sp < 13 || H.bubble) return;
+  if (sp < 40 || H.bubble) return;
   var a = clamp((sp - 13) / 12, 0, 1) * 0.5;
   var ux = H.vx / sp, uy = H.vy / sp;
   ctx.strokeStyle = "rgba(255,255,255," + a.toFixed(3) + ")"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
@@ -1095,7 +1118,8 @@ function frame(ts) {
 
   if (state === "title") drawTitle();
   else {
-    if (state === "play") { acc += dt; var n = 0; while (acc >= 1 / 60 && n < 4) { stepPlay(); acc -= 1 / 60; n++; } camUpdate(false); }
+    if (state === "play") { acc += dt; var n = 0; while (acc >= 1 / 60 && n < 8) { stepPlay(); acc -= 1 / 60; n++; }
+      if (acc > 0.25) acc = 0; camUpdate(false); }
     else if (state === "won") { H.t++; camUpdate(false); }
     drawSky();
     ctx.save();
